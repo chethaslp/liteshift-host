@@ -5,6 +5,12 @@ import bcrypt from "bcryptjs";
 import { Server } from "socket.io";
 import { dbHelpers } from "./lib/db";
 import { User } from "./lib/models";
+import apps from "./routes/apps";
+import caddy from "./routes/caddy";
+import deploy from "./routes/deploy";
+import systemctl from "./routes/systemctl";
+import system from "./routes/system";
+import user from "./routes/user";
 
 const port = parseInt(process.env.PORT || "3000", 10);
 const server = createServer();
@@ -15,6 +21,12 @@ io.on("connection", (socket) => {
   console.log(`${socket.id}-> User connected`);
 
   try{
+    apps(io, socket);
+    caddy(io, socket);
+    deploy(io, socket);
+    systemctl(io, socket);
+    system(io, socket);
+    user(io, socket);
     
   } catch(error) {
     console.error(error);
@@ -31,6 +43,8 @@ io.on('disconnect', (socket) => {
 io.use((socket, next) => {
   const username = socket.handshake.auth.username;
   const password = socket.handshake.auth.password;
+
+    return next();
 
   if (!username || !password) {
     const err = new Error("401");

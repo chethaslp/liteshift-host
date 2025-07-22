@@ -1,9 +1,13 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
 
 // Initialize SQLite database
 const dbPath = path.join(process.cwd(), 'data', 'data.db');
+if (!fs.existsSync(path.dirname(dbPath))) {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+}
 const db = new Database(dbPath);
 
 // Enable foreign keys
@@ -24,13 +28,13 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS apps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
-    pm2_id INTEGER,
     repository_url TEXT,
     branch TEXT DEFAULT 'main',
     deploy_path TEXT NOT NULL,
     start_command TEXT NOT NULL,
     build_command TEXT,
     install_command TEXT DEFAULT 'bun install',
+    runtime TEXT DEFAULT 'node',
     status TEXT DEFAULT 'stopped',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -95,7 +99,7 @@ const insertDefaultSetting = db.prepare(`
 insertDefaultSetting.run('apps_directory', '/var/www/apps');
 insertDefaultSetting.run('caddy_config_path', '/etc/caddy/Caddyfile');
 insertDefaultSetting.run('auto_ssl', 'true');
-insertDefaultSetting.run('pm2_auto_startup', 'true');
+insertDefaultSetting.run('systemctl_auto_startup', 'true');
 
 // Create default admin user if no users exist
 const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
@@ -124,10 +128,39 @@ export const dbHelpers = {
   updateUserLastLogin: (userId: number) =>
     db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').run(userId),
 
-  getPasetoKey: () => {
-    const result = db.prepare('SELECT value FROM settings WHERE key = ?').get('paseto_key') as { value: string } | undefined;
-    return result?.value;
+  getUserById: (id: number) => 
+    db.prepare('SELECT id, username, email, role, created_at, last_login FROM users WHERE id = ?').get(id),
+  
+  updateUser: (id: number, updates: { username?: string; email?: string; role?: string }) => {
+    const fields = [];
+    const values = [];
+    
+    if (updates.username !== undefined) {
+      fields.push('username = ?');
+      values.push(updates.username);
+    }
+    if (updates.email !== undefined) {
+      fields.push('email = ?');
+      values.push(updates.email);
+    }
+    if (updates.role !== undefined) {
+      fields.push('role = ?');
+      values.push(updates.role);
+    }
+    
+    if (fields.length === 0) return null;
+    
+    values.push(id);
+    const query = `UPDATE users SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+    return db.prepare(query).run(...values);
   },
+
+  updatePassword: (id: number, passwordHash: string) =>
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id),
+  
+  getUserWithPassword: (id: number) =>
+    db.prepare('SELECT * FROM users WHERE id = ?').get(id),
+  
 
   // Apps
   getAllApps: () => 
@@ -141,9 +174,9 @@ export const dbHelpers = {
   
   createApp: (app: any) =>
     db.prepare(`
-      INSERT INTO apps (name, repository_url, branch, deploy_path, start_command, build_command, install_command)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(app.name, app.repository_url, app.branch, app.deploy_path, app.start_command, app.build_command, app.install_command),
+      INSERT INTO apps (name, repository_url, branch, deploy_path, start_command, build_command, install_command, runtime)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(app.name, app.repository_url, app.branch, app.deploy_path, app.start_command, app.build_command, app.install_command, app.runtime || 'node'),
   
   updateApp: (id: number, updates: any) => {
     const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
@@ -181,6 +214,9 @@ export const dbHelpers = {
   
   removeAppEnvVar: (id: number) =>
     db.prepare('DELETE FROM app_env_vars WHERE id = ?').run(id),
+
+  deleteAppEnvVar: (appId: number, key: string) =>
+    db.prepare('DELETE FROM app_env_vars WHERE app_id = ? AND key = ?').run(appId, key),
 
   // Deployments
   createDeployment: (appId: number) =>

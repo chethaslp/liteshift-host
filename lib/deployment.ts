@@ -4,7 +4,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import simpleGit from 'simple-git';
 import { dbHelpers } from './db';
-import pm2Manager from './pm2';
+import systemctlManager from './systemctl';
 import caddyManager from './caddy';
 
 const execAsync = promisify(exec);
@@ -16,6 +16,7 @@ export interface DeploymentOptions {
   buildCommand?: string;
   installCommand?: string;
   startCommand: string;
+  runtime?: 'node' | 'python' | 'bun';
   envVars?: Record<string, string>;
   filePath?: string; // For file uploads
 }
@@ -160,7 +161,7 @@ class DeploymentManager {
 
   // Internal methods that do the actual work (renamed from original methods)
   private async deployFromGitInternal(options: DeploymentOptions, queueId?: number): Promise<DeploymentResult> {
-    const { appName, repository, branch = 'main', buildCommand, installCommand = 'npm install', startCommand, envVars = {} } = options;
+    const { appName, repository, branch = 'main', buildCommand, installCommand = 'npm install', startCommand, runtime = 'node', envVars = {} } = options;
     
     if (!repository) {
       throw new Error('Repository URL is required for Git deployment');
@@ -170,7 +171,7 @@ class DeploymentManager {
     let deploymentLog = '';
     
     // Create deployment record
-    const deployment = dbHelpers.createDeployment(this.getOrCreateApp(appName, repository, branch, startCommand, buildCommand, installCommand).lastInsertRowid as number);
+    const deployment = dbHelpers.createDeployment(this.getOrCreateApp(appName, repository, branch, startCommand, buildCommand, installCommand, runtime).lastInsertRowid as number);
     const deploymentId = deployment.lastInsertRowid as number;
 
     try {
@@ -267,32 +268,38 @@ class DeploymentManager {
         envObject[env.key] = env.value;
       });
 
-      // Start application with PM2
-      const pm2StartMessage = `Starting application with PM2...\n`;
-      deploymentLog += pm2StartMessage;
-      await this.logToQueue(queueId, pm2StartMessage);
+      // Start application with systemctl
+      const systemctlStartMessage = `Starting application with systemctl using ${runtime} runtime...\n`;
+      deploymentLog += systemctlStartMessage;
+      await this.logToQueue(queueId, systemctlStartMessage);
       
-      await pm2Manager.start(appName, startCommand, {
+      // Create systemd service
+      await systemctlManager.createService(appName, {
+        scriptPath: startCommand,
         cwd: appPath,
-        env: envObject
+        env: envObject,
+        runtime: runtime,
+        description: `LiteShift app: ${appName}`,
+        user: 'www-data'
       });
+      
+      // Start and enable the service
+      await systemctlManager.start(appName);
+      await systemctlManager.enable(appName);
 
-      const pm2StartedMessage = `Application started successfully with PM2\n`;
-      deploymentLog += pm2StartedMessage;
-      await this.logToQueue(queueId, pm2StartedMessage);
+      const systemctlStartedMessage = `Application started successfully with systemctl\n`;
+      deploymentLog += systemctlStartedMessage;
+      await this.logToQueue(queueId, systemctlStartedMessage);
 
       // Update app status in database
       dbHelpers.updateApp(app.id, { 
         status: 'running',
-        deploy_path: appPath,
-        pm2_id: (await pm2Manager.getProcessInfo(appName))?.pm_id || null
+        deploy_path: appPath
       });
 
-      // Save PM2 configuration
-      await pm2Manager.save();
-      const pm2SavedMessage = `PM2 configuration saved\n`;
-      deploymentLog += pm2SavedMessage;
-      await this.logToQueue(queueId, pm2SavedMessage);
+      const serviceCreatedMessage = `Systemctl service created and enabled\n`;
+      deploymentLog += serviceCreatedMessage;
+      await this.logToQueue(queueId, serviceCreatedMessage);
 
       // Update Caddy configuration if domains are configured
       const domains = dbHelpers.getAppDomains(app.id);
@@ -341,13 +348,13 @@ class DeploymentManager {
   }
 
   private async deployFromFileInternal(options: DeploymentOptions, fileBuffer: Buffer, queueId?: number): Promise<DeploymentResult> {
-    const { appName, startCommand, buildCommand, installCommand = 'npm install', envVars = {} } = options;
+    const { appName, startCommand, buildCommand, installCommand = 'npm install', runtime = 'node', envVars = {} } = options;
     
     const appPath = path.join(this.appsDirectory, appName);
     let deploymentLog = '';
     
     // Create deployment record
-    const app = this.getOrCreateApp(appName, null, 'main', startCommand, buildCommand, installCommand);
+    const app = this.getOrCreateApp(appName, null, 'main', startCommand, buildCommand, installCommand, runtime);
     const deployment = dbHelpers.createDeployment(app.lastInsertRowid as number);
     const deploymentId = deployment.lastInsertRowid as number;
 
@@ -357,12 +364,12 @@ class DeploymentManager {
       // Ensure apps directory exists
       await fs.mkdir(this.appsDirectory, { recursive: true });
       
-      // Stop existing PM2 process if running
+      // Stop existing systemctl service if running
       try {
-        await pm2Manager.stop(appName);
-        deploymentLog += `Stopped existing ${appName} process\n`;
+        await systemctlManager.stop(appName);
+        deploymentLog += `Stopped existing ${appName} service\n`;
       } catch (error) {
-        deploymentLog += `No existing process to stop\n`;
+        deploymentLog += `No existing service to stop\n`;
       }
 
       // Clean up existing directory
@@ -438,23 +445,30 @@ class DeploymentManager {
         envObject[env.key] = env.value;
       });
 
-      // Start application with PM2
-      deploymentLog += `Starting application with PM2...\n`;
-      await pm2Manager.start(appName, startCommand, {
+      // Start application with systemctl
+      deploymentLog += `Starting application with systemctl using ${runtime} runtime...\n`;
+      
+      // Create systemd service
+      await systemctlManager.createService(appName, {
+        scriptPath: startCommand,
         cwd: appPath,
-        env: envObject
+        env: envObject,
+        runtime: runtime,
+        description: `LiteShift app: ${appName}`,
+        user: 'www-data'
       });
+      
+      // Start and enable the service
+      await systemctlManager.start(appName);
+      await systemctlManager.enable(appName);
 
       // Update app status
       dbHelpers.updateApp(appRecord.id, { 
         status: 'running',
-        deploy_path: appPath,
-        pm2_id: (await pm2Manager.getProcessInfo(appName))?.pm_id || null
+        deploy_path: appPath
       });
 
-      // Save PM2 configuration
-      await pm2Manager.save();
-      deploymentLog += `PM2 configuration saved\n`;
+      deploymentLog += `Systemctl service created and enabled\n`;
 
       // Update Caddy if needed
       const domains = dbHelpers.getAppDomains(appRecord.id);
@@ -489,7 +503,7 @@ class DeploymentManager {
     }
   }
 
-  private getOrCreateApp(name: string, repository: string | null, branch: string, startCommand: string, buildCommand?: string, installCommand?: string) {
+  private getOrCreateApp(name: string, repository: string | null, branch: string, startCommand: string, buildCommand?: string, installCommand?: string, runtime: 'node' | 'python' | 'bun' = 'node') {
     const app = dbHelpers.getAppByName(name);
     
     if (!app) {
@@ -502,13 +516,15 @@ class DeploymentManager {
         deploy_path: appPath,
         start_command: startCommand,
         build_command: buildCommand,
-        install_command: installCommand
+        install_command: installCommand,
+        runtime
       });
     }
     
     // Update existing app
     const updates: any = {
-      start_command: startCommand
+      start_command: startCommand,
+      runtime
     };
     
     if (repository) updates.repository_url = repository;
@@ -546,6 +562,7 @@ class DeploymentManager {
       buildCommand: app.build_command,
       installCommand: app.install_command,
       startCommand: app.start_command,
+      runtime: app.runtime || 'node',
       envVars: envObject
     });
   }
@@ -566,11 +583,11 @@ class DeploymentManager {
     }
 
     try {
-      // Stop and delete PM2 process
-      await pm2Manager.delete(appName);
+      // Stop and delete systemctl service
+      await systemctlManager.deleteService(appName);
     } catch (error) {
-      // Process might not exist
-      console.log(`No PM2 process found for ${appName}`);
+      // Service might not exist
+      console.log(`No systemctl service found for ${appName}`);
     }
 
     // Remove app directory
