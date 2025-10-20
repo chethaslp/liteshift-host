@@ -228,49 +228,24 @@ const streamDeploymentLogs = (socket: Socket) => (data: { queueId: number }, cal
       return;
     }
 
-    // Set up a polling mechanism to check for log updates
-    const pollInterval = setInterval(() => {
-      try {
-        const deployment = DeploymentManager.getDeploymentStatus(queueId);
-        if (deployment) {
-          socket.emit('deploy:log-stream', {
-            queueId,
-            status: deployment.status,
-            logs: deployment.logs || '',
-            timestamp: new Date().toISOString()
-          });
+    // Enable real-time streaming in the deployment manager
+    DeploymentManager.enableStreamingForDeployment(queueId);
 
-          // Stop polling if deployment is completed or failed
-          if (deployment.status === 'completed' || deployment.status === 'failed') {
-            clearInterval(pollInterval);
-            socket.emit('deploy:log-stream-end', {
-              queueId,
-              finalStatus: deployment.status
-            });
-          }
-        }
-      } catch (error) {
-        console.error('Error streaming deployment logs:', error);
-        clearInterval(pollInterval);
-      }
-    }, 1000); // Poll every second
-
-    // Store the interval ID for cleanup
+    // Store the streaming state for cleanup
     if (!socket.data.deploymentStreams) {
       socket.data.deploymentStreams = new Map();
     }
-    socket.data.deploymentStreams.set(queueId, pollInterval);
+    socket.data.deploymentStreams.set(queueId, true);
 
     callback({
       success: true,
-      message: `Started streaming logs for deployment ${queueId}`
+      message: `Started real-time streaming for deployment ${queueId}`
     });
 
     // Auto-cleanup when socket disconnects
     socket.on('disconnect', () => {
       if (socket.data.deploymentStreams && socket.data.deploymentStreams.has(queueId)) {
-        const interval = socket.data.deploymentStreams.get(queueId);
-        clearInterval(interval);
+        DeploymentManager.disableStreamingForDeployment(queueId);
         socket.data.deploymentStreams.delete(queueId);
       }
     });
@@ -297,9 +272,10 @@ const stopStreamDeploymentLogs = (socket: Socket) => (data: { queueId: number },
       return;
     }
 
+    // Disable real-time streaming in the deployment manager
+    DeploymentManager.disableStreamingForDeployment(queueId);
+
     if (socket.data.deploymentStreams && socket.data.deploymentStreams.has(queueId)) {
-      const interval = socket.data.deploymentStreams.get(queueId);
-      clearInterval(interval);
       socket.data.deploymentStreams.delete(queueId);
       
       callback({

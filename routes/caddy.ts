@@ -174,6 +174,15 @@ const addCaddyDomain = async (data: { appName: string; domain: string }, callbac
       return;
     }
     
+    // Validate input types
+    if (typeof appName !== 'string' || typeof domain !== 'string') {
+      callback({
+        success: false,
+        error: 'appName and domain must be strings'
+      });
+      return;
+    }
+    
     await CaddyManager.addDomain(appName, domain);
     callback({
       success: true,

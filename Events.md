@@ -584,6 +584,7 @@ Create a new application with configuration stored in database.
   runtime: 'node' | 'python' | 'bun'; // Default: 'node'
   envVars?: Record<string, string>;
   autoDeploy?: boolean; // Default: false
+  port?: number; // Optional port, will auto-generate if not provided
 }
 ```
 
@@ -601,6 +602,7 @@ Create a new application with configuration stored in database.
       install_command: string;
       start_command: string;
       runtime: string;
+      port: number;
       created_at: string;
       updated_at: string;
     };
@@ -610,7 +612,7 @@ Create a new application with configuration stored in database.
 }
 ```
 
-**Note:** If `autoDeploy` is true and a repository is provided, a deployment will be automatically queued after app creation.
+**Note:** If `autoDeploy` is true and a repository is provided, a deployment will be automatically queued after app creation. The `port` field will be automatically generated if not provided, and a `PORT` environment variable will be set for the app.
 
 #### `app:list`
 Get list of all applications.
@@ -631,6 +633,7 @@ Get list of all applications.
       install_command: string;
       start_command: string;
       runtime: string;
+      port: number;
       created_at: string;
       updated_at: string;
     }>;
@@ -662,6 +665,7 @@ Get specific application details.
       install_command: string;
       start_command: string;
       runtime: string;
+      port: number;
       created_at: string;
       updated_at: string;
     } | null;
@@ -682,6 +686,7 @@ Update application configuration.
   installCommand?: string;
   startCommand?: string;
   runtime?: 'node' | 'python' | 'bun';
+  port?: number;
 }
 ```
 
@@ -699,6 +704,7 @@ Update application configuration.
       install_command: string;
       start_command: string;
       runtime: string;
+      port: number;
       created_at: string;
       updated_at: string;
     };
@@ -706,6 +712,8 @@ Update application configuration.
   message: string;
 }
 ```
+
+**Note:** If `port` is updated, the `PORT` environment variable will be automatically updated for the app.
 
 #### `app:delete`
 Delete an application and all its resources.
@@ -789,6 +797,108 @@ Delete environment variable from an application.
 {
   success: boolean;
   message: string;
+}
+```
+
+#### `app:env:add`
+Add a new environment variable to an application. Fails if the environment variable already exists.
+
+**Parameters:**
+```typescript
+{
+  appName: string;
+  key: string;
+  value: string;
+}
+```
+
+**Response:**
+```typescript
+{
+  success: boolean;
+  message: string;
+}
+```
+
+#### `app:env:update`
+Update an existing environment variable for an application. This is an alias for `app:env:set`.
+
+**Parameters:**
+```typescript
+{
+  appName: string;
+  key: string;
+  value: string;
+}
+```
+
+**Response:**
+```typescript
+{
+  success: boolean;
+  message: string;
+}
+```
+
+#### `app:env:set-multiple`
+Set multiple environment variables for an application at once.
+
+**Parameters:**
+```typescript
+{
+  appName: string;
+  envVars: Record<string, string>;
+}
+```
+
+**Response:**
+```typescript
+{
+  success: boolean;
+  message: string;
+}
+```
+
+**Example:**
+```typescript
+{
+  appName: "my-app",
+  envVars: {
+    "NODE_ENV": "production",
+    "API_KEY": "your-api-key",
+    "DATABASE_URL": "mongodb://localhost:27017/myapp"
+  }
+}
+```
+
+#### `app:env:delete-multiple`
+Delete multiple environment variables from an application at once.
+
+**Parameters:**
+```typescript
+{
+  appName: string;
+  keys: string[];
+}
+```
+
+**Response:**
+```typescript
+{
+  success: boolean;
+  message: string;
+  data?: {
+    deleted: string[];
+    failed: string[];
+  };
+}
+```
+
+**Example:**
+```typescript
+{
+  appName: "my-app",
+  keys: ["API_KEY", "OLD_CONFIG", "TEMP_VAR"]
 }
 ```
 
@@ -1044,7 +1154,7 @@ Delete an application and all its resources.
 ### Deployment Log Streaming
 
 #### `deploy:stream-logs`
-Start streaming deployment logs in real-time.
+Start streaming deployment logs in real-time. This enables live streaming of command outputs (install, build) and deployment progress without polling.
 
 **Parameters:**
 ```typescript
@@ -1062,11 +1172,28 @@ Start streaming deployment logs in real-time.
 ```
 
 **Emitted Events:**
-- `deploy:log-stream` - Real-time deployment updates
-- `deploy:log-stream-end` - Deployment completion
+- `deploy:log-stream` - Real-time deployment updates with live command output
+- `deploy:log-stream-end` - Deployment completion signal
+
+**Real-time Stream Format:**
+```typescript
+{
+  queueId: number;
+  status: 'queued' | 'building' | 'completed' | 'failed';
+  logs: string; // Complete logs so far
+  newMessage: string; // Latest log message
+  timestamp: string; // ISO timestamp
+}
+```
+
+**Features:**
+- Live streaming of command outputs (npm install, build commands, etc.)
+- Real-time progress updates without polling
+- Automatic completion signaling
+- Stream automatically stops when deployment completes or fails
 
 #### `deploy:stop-stream`
-Stop streaming deployment logs.
+Stop streaming deployment logs and disable real-time updates.
 
 **Parameters:**
 ```typescript
@@ -1082,6 +1209,8 @@ Stop streaming deployment logs.
   message: string;
 }
 ```
+
+**Note:** Streaming is automatically stopped when deployment completes, but this endpoint allows manual control.
 
 ---
 
@@ -1465,21 +1594,29 @@ socket.emit('app:create', {
     if (response.data.queueId) {
       console.log('Deployment queued:', response.data.queueId);
       
-      // Start streaming deployment logs
+      // Start real-time streaming of deployment logs
       socket.emit('deploy:stream-logs', {
         queueId: response.data.queueId
+      }, (streamResponse) => {
+        if (streamResponse.success) {
+          console.log('Real-time streaming enabled');
+        }
       });
     }
   }
 });
 
-// Listen for deployment updates
+// Listen for real-time deployment updates with live command output
 socket.on('deploy:log-stream', (data) => {
-  console.log(`[${data.timestamp}] ${data.status}: ${data.logs}`);
+  console.log(`[${data.timestamp}] New: ${data.newMessage}`);
+  console.log(`Status: ${data.status}`);
+  // data.newMessage shows live output from npm install, build commands, etc.
 });
 
+// Listen for deployment completion
 socket.on('deploy:log-stream-end', (data) => {
   console.log(`Deployment finished with status: ${data.finalStatus}`);
+  // Real-time streaming automatically stops here
 });
 ```
 
@@ -1595,6 +1732,57 @@ socket.emit('app:env:delete', {
 }, (response) => {
   if (response.success) {
     console.log('Environment variable deleted successfully');
+  }
+});
+
+// Add a new environment variable (fails if exists)
+socket.emit('app:env:add', {
+  appName: 'my-web-app',
+  key: 'NEW_FEATURE_FLAG',
+  value: 'true'
+}, (response) => {
+  if (response.success) {
+    console.log('Environment variable added successfully');
+  } else {
+    console.error('Failed to add:', response.error);
+  }
+});
+
+// Update an environment variable
+socket.emit('app:env:update', {
+  appName: 'my-web-app',
+  key: 'NODE_ENV',
+  value: 'production'
+}, (response) => {
+  if (response.success) {
+    console.log('Environment variable updated successfully');
+  }
+});
+
+// Set multiple environment variables at once
+socket.emit('app:env:set-multiple', {
+  appName: 'my-web-app',
+  envVars: {
+    'API_URL': 'https://api.example.com',
+    'DEBUG': 'false',
+    'MAX_CONNECTIONS': '100'
+  }
+}, (response) => {
+  if (response.success) {
+    console.log('Multiple environment variables set successfully');
+  }
+});
+
+// Delete multiple environment variables at once
+socket.emit('app:env:delete-multiple', {
+  appName: 'my-web-app',
+  keys: ['OLD_API_KEY', 'DEPRECATED_CONFIG', 'TEMP_VAR']
+}, (response) => {
+  if (response.success) {
+    console.log('Multiple environment variables deleted successfully');
+  } else if (response.data) {
+    console.log('Deleted:', response.data.deleted);
+    console.log('Failed:', response.data.failed);
   }
 });
 ```

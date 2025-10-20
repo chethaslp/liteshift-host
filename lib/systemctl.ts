@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import envManager from './env';
 
 const execAsync = promisify(exec);
 
@@ -74,10 +75,9 @@ class SystemctlManager {
     const {
       scriptPath,
       cwd = process.cwd(),
-      env = {},
       runtime = 'node',
       description = `LiteShift app: ${appName}`,
-      user = 'www-data'
+      user = 'root'
     } = options;
 
     const serviceName = `liteshift-${appName}.service`;
@@ -85,11 +85,9 @@ class SystemctlManager {
 
     // Get the correct interpreter based on runtime
     const interpreter = this.getInterpreter(runtime);
-    
-    // Build environment variables string
-    const envVars = Object.entries(env)
-      .map(([key, value]) => `Environment="${key}=${value}"`)
-      .join('\n');
+
+    // Get environment file path
+    const envFilePath = envManager.getAppEnvFilePath(appName);
 
     // Create systemd service content
     const serviceContent = `[Unit]
@@ -102,8 +100,8 @@ Type=simple
 User=${user}
 Group=${user}
 WorkingDirectory=${cwd}
-ExecStart=${interpreter} ${scriptPath}
-${envVars}
+ExecStart=${scriptPath}
+EnvironmentFile=${envFilePath}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -117,11 +115,7 @@ WantedBy=multi-user.target
     try {
       // Write service file (requires sudo)
       await execAsync(`echo '${serviceContent}' | sudo tee ${servicePath}`);
-      
-      // Set proper permissions
       await execAsync(`sudo chmod 644 ${servicePath}`);
-      
-      // Reload systemd daemon
       await execAsync('sudo systemctl daemon-reload');
       
       console.log(`Created systemd service: ${serviceName}`);
@@ -201,19 +195,15 @@ WantedBy=multi-user.target
     const serviceName = `liteshift-${appName}.service`;
     
     try {
-      // Get basic status
       const { stdout: statusOutput } = await execAsync(`systemctl is-active ${serviceName}`);
       const status = statusOutput.trim() as 'active' | 'inactive' | 'failed' | 'activating';
       
-      // Check if enabled
       const { stdout: enabledOutput } = await execAsync(`systemctl is-enabled ${serviceName}`);
       const enabled = enabledOutput.trim() === 'enabled';
       
-      // Get detailed service information
       const { stdout: showOutput } = await execAsync(`systemctl show ${serviceName}`);
       const properties = this.parseSystemctlShow(showOutput);
       
-      // Get detailed status output for parsing
       let detailedStatus = null;
       try {
         const { stdout: detailedStatusOutput } = await execAsync(`systemctl status ${serviceName}`);
@@ -398,12 +388,12 @@ WantedBy=multi-user.target
   private getInterpreter(runtime: Runtime): string {
     switch (runtime) {
       case 'python':
-        return 'python3';
+        return '/usr/bin/python3';
       case 'bun':
-        return 'bun';
+        return '/root/.bun/bin/bun';
       case 'node':
       default:
-        return 'npm';
+        return '/usr/bin/npm';
     }
   }
 

@@ -6,6 +6,8 @@ import simpleGit from 'simple-git';
 import { dbHelpers } from './db';
 import systemctlManager from './systemctl';
 import caddyManager from './caddy';
+import envManager from './env';
+import type { Server } from 'socket.io';
 
 const execAsync = promisify(exec);
 
@@ -40,6 +42,8 @@ export interface QueuedDeployment {
 class DeploymentManager {
   private appsDirectory: string;
   private isProcessing: boolean = false;
+  private io: Server | null = null;
+  private activeStreams: Map<number, boolean> = new Map();
 
   constructor() {
     this.appsDirectory = dbHelpers.getSetting('apps_directory') || '/var/www/apps';
@@ -47,11 +51,91 @@ class DeploymentManager {
     this.processQueue();
   }
 
-  // Helper method to log deployment progress
+  // Set the Socket.IO server instance for real-time streaming
+  setSocketServer(io: Server) {
+    this.io = io;
+  }
+
+  // Check if streaming is active for a deployment
+  isStreamingActive(queueId: number): boolean {
+    return this.activeStreams.get(queueId) || false;
+  }
+
+  // Start streaming for a deployment
+  startStreaming(queueId: number) {
+    this.activeStreams.set(queueId, true);
+  }
+
+  // Execute command with real-time streaming
+  private async executeCommandWithStreaming(
+    command: string,
+    options: { cwd: string },
+    queueId: number | undefined,
+    commandName: string
+  ): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+
+      const child = spawn('sh', ['-c', command], {
+        cwd: options.cwd,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      // Stream stdout
+      child.stdout.on('data', async (data) => {
+        const output = data.toString();
+        stdout += output;
+        
+        // Log and stream the output in real-time
+        await this.logToQueue(queueId, output);
+      });
+
+      // Stream stderr
+      child.stderr.on('data', async (data) => {
+        const output = data.toString();
+        stderr += output;
+        
+        // Log and stream the error output in real-time
+        await this.logToQueue(queueId, output);
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`${commandName} failed with exit code ${code}\n${stderr}`));
+        }
+      });
+
+      child.on('error', (error) => {
+        reject(new Error(`Failed to execute ${commandName}: ${error.message}`));
+      });
+    });
+  }
+
+  // Stop streaming for a deployment
+  stopStreaming(queueId: number) {
+    this.activeStreams.set(queueId, false);
+  }
+
+  // Helper method to log deployment progress and emit real-time updates
   private async logToQueue(queueId: number | undefined, message: string) {
     if (queueId) {
       try {
         dbHelpers.appendQueueLogs(queueId, message);
+        
+        // Emit real-time update if streaming is active and Socket.IO is available
+        if (this.io && this.isStreamingActive(queueId)) {
+          const deployment = dbHelpers.getQueueItem(queueId) as any;
+          this.io.emit('deploy:log-stream', {
+            queueId,
+            status: deployment?.status || 'building',
+            logs: deployment?.logs || '',
+            newMessage: message,
+            timestamp: new Date().toISOString()
+          });
+        }
       } catch (error) {
         console.error('Failed to log to queue:', error);
       }
@@ -171,7 +255,7 @@ class DeploymentManager {
     let deploymentLog = '';
     
     // Create deployment record
-    const deployment = dbHelpers.createDeployment(this.getOrCreateApp(appName, repository, branch, startCommand, buildCommand, installCommand, runtime).lastInsertRowid as number);
+    const deployment = dbHelpers.createDeployment((await this.getOrCreateApp(appName, repository, branch, startCommand, buildCommand, installCommand, runtime)).lastInsertRowid as number);
     const deploymentId = deployment.lastInsertRowid as number;
 
     try {
@@ -223,12 +307,31 @@ class DeploymentManager {
         deploymentLog += installStartMessage;
         await this.logToQueue(queueId, installStartMessage);
         
-        const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
-        deploymentLog += installOutput;
-        await this.logToQueue(queueId, installOutput);
-        if (installError) {
-          deploymentLog += installError;
-          await this.logToQueue(queueId, installError);
+        try {
+          // Use streaming execution if we have streaming active, otherwise fallback to regular exec
+          if (queueId && this.isStreamingActive(queueId)) {
+            const { stdout: installOutput, stderr: installError } = await this.executeCommandWithStreaming(
+              installCommand,
+              { cwd: appPath },
+              queueId,
+              'install command'
+            );
+            deploymentLog += installOutput;
+            if (installError) deploymentLog += installError;
+          } else {
+            const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
+            deploymentLog += installOutput;
+            await this.logToQueue(queueId, installOutput);
+            if (installError) {
+              deploymentLog += installError;
+              await this.logToQueue(queueId, installError);
+            }
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Install command failed';
+          deploymentLog += errorMessage;
+          await this.logToQueue(queueId, errorMessage);
+          throw error;
         }
         
         const installCompleteMessage = `Install command completed\n`;
@@ -242,12 +345,31 @@ class DeploymentManager {
         deploymentLog += buildStartMessage;
         await this.logToQueue(queueId, buildStartMessage);
         
-        const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
-        deploymentLog += buildOutput;
-        await this.logToQueue(queueId, buildOutput);
-        if (buildError) {
-          deploymentLog += buildError;
-          await this.logToQueue(queueId, buildError);
+        try {
+          // Use streaming execution if we have streaming active, otherwise fallback to regular exec
+          if (queueId && this.isStreamingActive(queueId)) {
+            const { stdout: buildOutput, stderr: buildError } = await this.executeCommandWithStreaming(
+              buildCommand,
+              { cwd: appPath },
+              queueId,
+              'build command'
+            );
+            deploymentLog += buildOutput;
+            if (buildError) deploymentLog += buildError;
+          } else {
+            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
+            deploymentLog += buildOutput;
+            await this.logToQueue(queueId, buildOutput);
+            if (buildError) {
+              deploymentLog += buildError;
+              await this.logToQueue(queueId, buildError);
+            }
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Build command failed';
+          deploymentLog += errorMessage;
+          await this.logToQueue(queueId, errorMessage);
+          throw error;
         }
         
         const buildCompleteMessage = `Build command completed\n`;
@@ -259,6 +381,18 @@ class DeploymentManager {
       const app = dbHelpers.getAppByName(appName) as any;
       for (const [key, value] of Object.entries(envVars)) {
         dbHelpers.setAppEnvVar(app.id, key, value);
+      }
+
+      // Update environment file
+      try {
+        await envManager.updateEnvFile(appName);
+        const envFileMessage = `Environment file updated\n`;
+        deploymentLog += envFileMessage;
+        await this.logToQueue(queueId, envFileMessage);
+      } catch (error) {
+        const envErrorMessage = `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
+        deploymentLog += envErrorMessage;
+        await this.logToQueue(queueId, envErrorMessage);
       }
 
       // Get all env vars for this app
@@ -280,7 +414,7 @@ class DeploymentManager {
         env: envObject,
         runtime: runtime,
         description: `LiteShift app: ${appName}`,
-        user: 'www-data'
+        user: 'root'
       });
       
       // Start and enable the service
@@ -322,6 +456,11 @@ class DeploymentManager {
       const completionMessage = `✅ Deployment completed successfully!\n`;
       await this.logToQueue(queueId, completionMessage);
 
+      // Emit completion status for real-time streaming
+      if (queueId) {
+        this.emitDeploymentComplete(queueId, 'completed');
+      }
+
       return {
         success: true,
         deploymentId,
@@ -337,6 +476,11 @@ class DeploymentManager {
       
       // Update deployment status
       dbHelpers.updateDeployment(deploymentId, 'failed', deploymentLog);
+
+      // Emit failure status for real-time streaming
+      if (queueId) {
+        this.emitDeploymentComplete(queueId, 'failed');
+      }
 
       return {
         success: false,
@@ -354,7 +498,7 @@ class DeploymentManager {
     let deploymentLog = '';
     
     // Create deployment record
-    const app = this.getOrCreateApp(appName, null, 'main', startCommand, buildCommand, installCommand, runtime);
+    const app = await this.getOrCreateApp(appName, null, 'main', startCommand, buildCommand, installCommand, runtime);
     const deployment = dbHelpers.createDeployment(app.lastInsertRowid as number);
     const deploymentId = deployment.lastInsertRowid as number;
 
@@ -419,23 +563,67 @@ class DeploymentManager {
       // Install dependencies
       if (installCommand) {
         deploymentLog += `Running install command: ${installCommand}\n`;
-        const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
-        deploymentLog += installOutput;
-        if (installError) deploymentLog += installError;
+        try {
+          // Use streaming execution if we have streaming active, otherwise fallback to regular exec
+          if (queueId && this.isStreamingActive(queueId)) {
+            const { stdout: installOutput, stderr: installError } = await this.executeCommandWithStreaming(
+              installCommand,
+              { cwd: appPath },
+              queueId,
+              'install command'
+            );
+            deploymentLog += installOutput;
+            if (installError) deploymentLog += installError;
+          } else {
+            const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
+            deploymentLog += installOutput;
+            if (installError) deploymentLog += installError;
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Install command failed';
+          deploymentLog += errorMessage;
+          throw error;
+        }
       }
 
       // Build application
       if (buildCommand) {
         deploymentLog += `Running build command: ${buildCommand}\n`;
-        const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
-        deploymentLog += buildOutput;
-        if (buildError) deploymentLog += buildError;
+        try {
+          // Use streaming execution if we have streaming active, otherwise fallback to regular exec
+          if (queueId && this.isStreamingActive(queueId)) {
+            const { stdout: buildOutput, stderr: buildError } = await this.executeCommandWithStreaming(
+              buildCommand,
+              { cwd: appPath },
+              queueId,
+              'build command'
+            );
+            deploymentLog += buildOutput;
+            if (buildError) deploymentLog += buildError;
+          } else {
+            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
+            deploymentLog += buildOutput;
+            if (buildError) deploymentLog += buildError;
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Build command failed';
+          deploymentLog += errorMessage;
+          throw error;
+        }
       }
 
       // Set environment variables
       const appRecord = dbHelpers.getAppByName(appName) as any;
       for (const [key, value] of Object.entries(envVars)) {
         dbHelpers.setAppEnvVar(appRecord.id, key, value);
+      }
+
+      // Update environment file
+      try {
+        await envManager.updateEnvFile(appName);
+        deploymentLog += `Environment file updated\n`;
+      } catch (error) {
+        deploymentLog += `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
       }
 
       // Get all env vars for this app
@@ -481,6 +669,11 @@ class DeploymentManager {
       // Update deployment status
       dbHelpers.updateDeployment(deploymentId, 'success', deploymentLog);
 
+      // Emit completion status for real-time streaming
+      if (queueId) {
+        this.emitDeploymentComplete(queueId, 'completed');
+      }
+
       return {
         success: true,
         deploymentId,
@@ -494,6 +687,11 @@ class DeploymentManager {
       
       dbHelpers.updateDeployment(deploymentId, 'failed', deploymentLog);
 
+      // Emit failure status for real-time streaming
+      if (queueId) {
+        this.emitDeploymentComplete(queueId, 'failed');
+      }
+
       return {
         success: false,
         deploymentId,
@@ -503,13 +701,13 @@ class DeploymentManager {
     }
   }
 
-  private getOrCreateApp(name: string, repository: string | null, branch: string, startCommand: string, buildCommand?: string, installCommand?: string, runtime: 'node' | 'python' | 'bun' = 'node') {
+  private async getOrCreateApp(name: string, repository: string | null, branch: string, startCommand: string, buildCommand?: string, installCommand?: string, runtime: 'node' | 'python' | 'bun' = 'node', port?: number) {
     const app = dbHelpers.getAppByName(name);
-    
+
     if (!app) {
       // Create new app
       const appPath = path.join(this.appsDirectory, name);
-      return dbHelpers.createApp({
+      const result = dbHelpers.createApp({
         name,
         repository_url: repository,
         branch,
@@ -517,8 +715,18 @@ class DeploymentManager {
         start_command: startCommand,
         build_command: buildCommand,
         install_command: installCommand,
-        runtime
+        runtime,
+        port: port || dbHelpers.generateUniquePort(),
       });
+
+      // Create environment file for the new app
+      try {
+        await envManager.createEnvFile(name);
+      } catch (error) {
+        console.error(`Failed to create environment file for ${name}:`, error);
+      }
+
+      return result;
     }
     
     // Update existing app
@@ -598,12 +806,39 @@ class DeploymentManager {
       console.log(`Could not remove directory ${appPath}`);
     }
 
+    // Remove environment file
+    try {
+      await envManager.deleteEnvFile(appName);
+    } catch (error) {
+      console.log(`Could not remove environment file for ${appName}:`, error);
+    }
+
     // Remove from database (this will cascade to domains, env vars, etc.)
     dbHelpers.deleteApp(app.id);
 
     // Update Caddy configuration
     await caddyManager.writeCaddyfile();
     await caddyManager.reloadCaddy();
+  }
+
+  // Public methods for streaming control
+  enableStreamingForDeployment(queueId: number) {
+    this.startStreaming(queueId);
+  }
+
+  disableStreamingForDeployment(queueId: number) {
+    this.stopStreaming(queueId);
+  }
+
+  // Method to emit completion status
+  private emitDeploymentComplete(queueId: number, status: 'completed' | 'failed') {
+    if (this.io && this.isStreamingActive(queueId)) {
+      this.io.emit('deploy:log-stream-end', {
+        queueId,
+        finalStatus: status
+      });
+      this.stopStreaming(queueId);
+    }
   }
 }
 

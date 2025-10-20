@@ -3,6 +3,8 @@ import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { formatBytes } from "../lib/utils";
+import { dbHelpers } from "../lib/db";
+import { formatUptime } from "../lib/utils";
 
 const execAsync = promisify(exec);
 
@@ -360,23 +362,84 @@ const stopStreamSystemAnalytics = (socket: Socket) => (data: {}, callback: (resp
   }
 };
 
-// Helper function to format uptime
-function formatUptime(uptime: number): string {
-  const days = Math.floor(uptime / 86400);
-  const hours = Math.floor((uptime % 86400) / 3600);
-  const minutes = Math.floor((uptime % 3600) / 60);
-  const seconds = Math.floor(uptime % 60);
 
-  if (days > 0) {
-    return `${days}d ${hours}h ${minutes}m ${seconds}s`;
-  } else if (hours > 0) {
-    return `${hours}h ${minutes}m ${seconds}s`;
-  } else if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  } else {
-    return `${seconds}s`;
+
+
+// Get all configuration settings
+const getSettings = async (data: {}, callback: (response: any) => void) => {
+  try {
+    const settings = dbHelpers.getAllSettings();
+    
+    callback({
+      success: true,
+      data: { settings }
+    });
+  } catch (error) {
+    console.error('Get all settings error:', error);
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
   }
-}
+};
+
+// Set multiple settings at once
+const setSettings = async (data: { settings: Record<string, string> }, callback: (response: any) => void) => {
+  try {
+    const { settings } = data;
+    
+    if (!settings || typeof settings !== 'object') {
+      callback({
+        success: false,
+        error: 'settings object is required'
+      });
+      return;
+    }
+
+    const settingsKeys = Object.keys(settings);
+    if (settingsKeys.length === 0) {
+      callback({
+        success: false,
+        error: 'At least one setting is required'
+      });
+      return;
+    }
+
+    // Validate all keys first
+    for (const key of settingsKeys) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(key)) {
+        callback({
+          success: false,
+          error: `Invalid key format for '${key}'. Use only alphanumeric characters, underscores, and dashes.`
+        });
+        return;
+      }
+    }
+
+    // Set all settings
+    for (const [key, value] of Object.entries(settings)) {
+      if (value === undefined || value === null) {
+        callback({
+          success: false,
+          error: `Invalid value for setting '${key}'`
+        });
+        return;
+      }
+      dbHelpers.setSetting(key, String(value));
+    }
+    
+    callback({
+      success: true,
+      message: `${settingsKeys.length} setting(s) updated successfully: ${settingsKeys.join(', ')}`,
+    });
+  } catch (error) {
+    console.error('Set multiple settings error:', error);
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+};
 
 export default (server: Server, socket: Socket) => {
   socket.on("system:analytics", getSystemAnalytics);
@@ -387,4 +450,9 @@ export default (server: Server, socket: Socket) => {
   socket.on("system:caddy-status", getCaddyServiceStatus);
   socket.on("system:stream-analytics", streamSystemAnalytics(socket));
   socket.on("system:stop-stream", stopStreamSystemAnalytics(socket));
+  
+  // Configuration management routes
+  socket.on("system:get-settings", getSettings);
+  socket.on("system:set-settings", setSettings);
+
 }

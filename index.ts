@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { Server } from "socket.io";
 import { dbHelpers } from "./lib/db";
 import { User } from "./lib/models";
+import DeploymentManager from "./lib/deployment";
 import apps from "./routes/apps";
 import caddy from "./routes/caddy";
 import deploy from "./routes/deploy";
@@ -15,6 +16,9 @@ import user from "./routes/user";
 const port = parseInt(process.env.PORT || "3000", 10);
 const server = createServer();
 const io = new Server(server, {cors: {origin: "*"}});
+
+// Set up the deployment manager with Socket.IO server for real-time streaming
+DeploymentManager.setSocketServer(io);
 
 
 io.on("connection", (socket) => {

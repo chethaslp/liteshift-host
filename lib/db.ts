@@ -36,6 +36,7 @@ db.exec(`
     install_command TEXT DEFAULT 'bun install',
     runtime TEXT DEFAULT 'node',
     status TEXT DEFAULT 'stopped',
+    port INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -174,9 +175,9 @@ export const dbHelpers = {
   
   createApp: (app: any) =>
     db.prepare(`
-      INSERT INTO apps (name, repository_url, branch, deploy_path, start_command, build_command, install_command, runtime)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(app.name, app.repository_url, app.branch, app.deploy_path, app.start_command, app.build_command, app.install_command, app.runtime || 'node'),
+      INSERT INTO apps (name, repository_url, branch, deploy_path, start_command, build_command, install_command, runtime, port)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(app.name, app.repository_url, app.branch, app.deploy_path, app.start_command, app.build_command, app.install_command, app.runtime || 'node', app.port),
   
   updateApp: (id: number, updates: any) => {
     const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
@@ -186,6 +187,27 @@ export const dbHelpers = {
   
   deleteApp: (id: number) =>
     db.prepare('DELETE FROM apps WHERE id = ?').run(id),
+
+  // Generate a unique port for a new app
+  generateUniquePort: (): number => {
+    const usedPorts = db.prepare('SELECT port FROM apps WHERE port IS NOT NULL').all() as { port: number }[];
+    const usedPortNumbers = new Set(usedPorts.map(p => p.port));
+    
+    // Start from port 4000 and find the first available port
+    for (let port = 4000; port <= 9000; port++) {
+      if (!usedPortNumbers.has(port)) {
+        return port;
+      }
+    }
+    
+    // Fallback: random port in higher range if all standard ports are taken
+    let randomPort;
+    do {
+      randomPort = 9001 + Math.floor(Math.random() * 1000);
+    } while (usedPortNumbers.has(randomPort));
+    
+    return randomPort;
+  },
 
   // Domains
   getAppDomains: (appId: number) =>
@@ -200,7 +222,7 @@ export const dbHelpers = {
     `).all(),
   
   addAppDomain: (appId: number, domain: string, isPrimary: boolean = false) =>
-    db.prepare('INSERT INTO app_domains (app_id, domain, is_primary) VALUES (?, ?, ?)').run(appId, domain, isPrimary),
+    db.prepare('INSERT INTO app_domains (app_id, domain, is_primary) VALUES (?, ?, ?)').run(appId, domain, isPrimary ? 1 : 0),
   
   removeAppDomain: (id: number) =>
     db.prepare('DELETE FROM app_domains WHERE id = ?').run(id),
@@ -275,9 +297,15 @@ export const dbHelpers = {
   // Settings
   getSetting: (key: string) => {
     const result = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
-    return result?.value;
+    return result?.value || null;
   },
   
   setSetting: (key: string, value: string) =>
     db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value),
+
+  getAllSettings: () =>
+    db.prepare('SELECT key, value FROM settings ORDER BY key').all(),
+
+  deleteSetting: (key: string) =>
+    db.prepare('DELETE FROM settings WHERE key = ?').run(key),
 };

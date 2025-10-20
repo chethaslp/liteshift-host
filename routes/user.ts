@@ -1,6 +1,12 @@
-import type { Server, Socket } from "socket.io";
+import { Server, Socket } from "socket.io";
 import { dbHelpers } from "../lib/db";
 import bcrypt from "bcryptjs";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { version } from "os";
+
+const execAsync = promisify(exec);
+
 
 // Get authenticated user's information
 const getUserInfo = async (data: { userId: number }, callback: (response: any) => void) => {
@@ -232,8 +238,39 @@ const editUser = async (data: {
   }
 };
 
+const handshake = (socket: Socket) => async (data: any, callback: (response: any) => void) => {
+
+  const { stdout, stderr } = await execAsync("which npm && which bun && which pip && which python3 && curl ipv4.icanhazip.com");
+  const out = stdout.split('\n');
+
+  if (!stdout) {
+    callback({
+      success: false,
+      error: stderr.trim() || 'Unknown error occurred'
+    });
+    return;
+  }
+
+  callback({
+      success: true,
+      user: socket.data.user,
+      systemInfo: {
+        paths: {
+          npm: out[0],
+          bun: out[1],
+          pip: out[2],
+          python3: out[3]
+        },
+        version : process.env.version,
+        host: out[4],
+      }
+    });
+}
+
+
 export default (server: Server, socket: Socket) => {
   socket.on("user:get", getUserInfo);
   socket.on("user:changePassword", changePassword(socket));
   socket.on("user:edit", editUser);
+  socket.on("handshake", handshake(socket));
 }

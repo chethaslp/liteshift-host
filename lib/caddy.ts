@@ -25,7 +25,7 @@ class CaddyManager {
 
   async generateCaddyfile(): Promise<string> {
     const apps = dbHelpers.getAllApps();
-    const dashboardURL = dbHelpers.getSetting('dashboard_url') || ':8008';
+    const dashboardURL = dbHelpers.getSetting('dashboard_url') || ':1000';
     let config = `# Auto-generated Caddyfile for LiteShift
 # Generated at ${new Date().toISOString()}
 
@@ -39,18 +39,14 @@ ${dashboardURL} {
       const domains = dbHelpers.getAppDomains(app.id);
       
       if (domains && domains.length > 0) {
+        // Use the port from the database instead of generating from hash
+        const appPort = app.port || this.getAppPort(app.name); // Fallback to old method if port is null
+        
         for (const domain of domains as any[]) {
-          const appPort = this.getAppPort(app.name);
-          
           config += `
-# App: ${app.name}
+# App: ${app.name} (Port: ${appPort})
 ${domain.domain} {
 	reverse_proxy localhost:${appPort}
-	
-	# Enable automatic HTTPS
-	tls {
-		${domain.ssl_enabled ? 'on_demand' : 'off'}
-	}
 	
 	# Security headers
 	header {
@@ -72,7 +68,8 @@ ${domain.domain} {
 
 `;
 
-          // Add www redirect if needed
+          if (!domain.domain.startsWith(":")) {
+            // Add www redirect if needed
           if (domain.domain.startsWith('www.')) {
             const nonWwwDomain = domain.domain.replace('www.', '');
             config += `# Redirect non-www to www for ${app.name}
@@ -89,6 +86,7 @@ www.${domain.domain} {
 
 `;
           }
+          }
         }
       }
     }
@@ -96,17 +94,16 @@ www.${domain.domain} {
     return config;
   }
 
+  // Deprecated: Port allocation based on app name hash (kept for backwards compatibility)
+  // New apps should use the port field from the database
   private getAppPort(appName: string): number {
     // Simple port allocation based on app name hash
-    // In production, you might want to store this in the database
     let hash = 0;
     for (let i = 0; i < appName.length; i++) {
       const char = appName.charCodeAt(i);
       hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32-bit integer
+      hash = hash & hash;
     }
-    
-    // Map to port range 4000-9000
     return 4000 + (Math.abs(hash) % 5000);
   }
 
@@ -124,24 +121,17 @@ www.${domain.domain} {
     try {
       const config = await this.generateCaddyfile();
       
-      // Create backup of existing config
       try {
         const existingConfig = await fs.readFile(this.caddyConfigPath, 'utf-8');
         const backupPath = `${this.caddyConfigPath}.backup.${Date.now()}`;
         await fs.writeFile(backupPath, existingConfig);
-        console.log(`Backed up existing Caddyfile to ${backupPath}`);
       } catch (error) {
-        // File might not exist, which is fine
         console.log('No existing Caddyfile found, creating new one');
       }
       
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(this.caddyConfigPath), { recursive: true });
-      
       // Write new config
+      await fs.mkdir(path.dirname(this.caddyConfigPath), { recursive: true });
       await fs.writeFile(this.caddyConfigPath, config);
-      console.log(`Caddyfile updated at ${this.caddyConfigPath}`);
-      
     } catch (error) {
       console.error('Failed to write Caddyfile:', error);
       throw error;
@@ -150,9 +140,7 @@ www.${domain.domain} {
 
   async reloadCaddy(): Promise<void> {
     try {
-      // Try to reload Caddy gracefully
-      await execAsync('caddy reload --config ' + this.caddyConfigPath);
-      console.log('Caddy reloaded successfully');
+      await execAsync('sudo systemctl reload caddy');
     } catch (error) {
       console.error('Failed to reload Caddy:', error);
       throw error;
@@ -175,13 +163,9 @@ www.${domain.domain} {
       throw new Error(`App ${appName} not found`);
     }
 
-    // Add domain to database
     dbHelpers.addAppDomain((app as any).id, domain);
-    
-    // Regenerate and reload Caddyfile
     await this.writeCaddyfile();
-    
-    // Validate config before reloading
+
     const isValid = await this.validateConfig();
     if (!isValid) {
       throw new Error('Generated Caddy configuration is invalid');
@@ -192,8 +176,6 @@ www.${domain.domain} {
 
   async removeDomain(domainId: number): Promise<void> {
     dbHelpers.removeAppDomain(domainId);
-    
-    // Regenerate and reload Caddyfile
     await this.writeCaddyfile();
     await this.reloadCaddy();
   }
@@ -229,7 +211,7 @@ www.${domain.domain} {
 
   async startCaddy(): Promise<void> {
     try {
-      await execAsync(`caddy start --config ${this.caddyConfigPath}`);
+      await execAsync(`sudo systemctl start caddy`);
     } catch (error) {
       console.error('Failed to start Caddy:', error);
       throw error;
@@ -238,7 +220,7 @@ www.${domain.domain} {
 
   async stopCaddy(): Promise<void> {
     try {
-      await execAsync('caddy stop');
+      await execAsync('sudo systemctl stop caddy');
     } catch (error) {
       console.error('Failed to stop Caddy:', error);
       throw error;
