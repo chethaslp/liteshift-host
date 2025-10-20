@@ -13,7 +13,7 @@ import systemctl from "./routes/systemctl";
 import system from "./routes/system";
 import user from "./routes/user";
 
-const port = parseInt(process.env.PORT || "3000", 10);
+const port = parseInt(process.env.PORT || "8008", 10);
 const server = createServer();
 const io = new Server(server, {cors: {origin: "*"}});
 
