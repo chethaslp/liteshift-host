@@ -34,6 +34,28 @@ else
 fi
 sudo apt-get install -y git python3 python3-pip curl unzip
 
+# --- Clone Liteshift Repository ---
+echo -e "\n${BLUE}Cloning Liteshift repository from GitHub...${NC}"
+LITESHIFT_DIR="/root/liteshift"
+if [ -d "$LITESHIFT_DIR" ]; then
+    echo -e "${YELLOW}Liteshift directory already exists. Pulling latest changes...${NC}"
+    cd "$LITESHIFT_DIR"
+    git pull
+else
+    echo -e "${BLUE}Cloning repository...${NC}"
+    git clone https://github.com/chethaslp/liteshift-host.git "$LITESHIFT_DIR"
+    cd "$LITESHIFT_DIR"
+fi
+
+# --- Install Node.js project dependencies ---
+echo -e "\n${BLUE}Installing project packages using npm...${NC}"
+npm install
+
+# --- Build the project ---
+echo -e "\n${BLUE}Building the project...${NC}"
+npm run build
+echo -e "${GREEN}Build complete.${NC}"
+
 # --- Install Caddy ---
 echo -e "\n${BLUE}Installing Caddy...${NC}"
 if command -v caddy &> /dev/null
@@ -46,17 +68,6 @@ else
     sudo apt-get update
     sudo apt-get install -y caddy
     echo -e "${GREEN}Caddy installation complete.${NC}"
-fi
-
-# --- Install Node.js project dependencies ---
-echo -e "\n${BLUE}Installing project packages using npm...${NC}"
-# Assuming the script is run from the liteshift directory
-if [ -f "package.json" ]; then
-    # Change to the liteshift directory before running npm install
-    cd /root/liteshift || exit
-    npm install
-else
-    echo -e "${YELLOW}Warning: package.json not found in /root/liteshift. Skipping 'npm install'.${NC}"
 fi
 
 # --- Create and start Liteshift service ---
