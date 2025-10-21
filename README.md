@@ -1,5 +1,10 @@
 # Liteshift - Host Server
 
+## To install on your server
+```bash
+bash <(curl -s https://raw.githubusercontent.com/chethaslp/liteshift-host/refs/heads/main/install.sh)
+```
+
 ## To build
 ```bash
 npm run build
