@@ -24,6 +24,10 @@ sudo apt-get update
 
 # --- Install Core Dependencies (Git, Python, Node.js, etc.) ---
 echo -e "\n${BLUE}Installing Git, Python, Pip, Node.js, npm, Curl, and Unzip...${NC}"
+
+# Ensure curl is available before using it to set up Node.js or Bun
+sudo apt-get install -y curl
+
 if command -v node &> /dev/null
 then
     echo -e "${YELLOW}Node.js is already installed. Skipping installation.${NC}"
@@ -32,7 +36,27 @@ else
     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
     sudo apt-get install -y nodejs
 fi
-sudo apt-get install -y git python3 python3-pip curl unzip
+
+# Install other required packages
+sudo apt-get install -y git python3 python3-pip unzip
+
+# --- Install Bun (https://bun.sh) ---
+if command -v bun &> /dev/null
+then
+    echo -e "${YELLOW}Bun is already installed. Skipping installation.${NC}"
+else
+    echo -e "${BLUE}Installing Bun (bun.sh)...${NC}"
+    # Run Bun install script (runs as root in this script). The installer places bun in /root/.bun for root.
+    curl -fsSL https://bun.sh/install | bash
+
+    # Create a symlink so bun is available on PATH for system scripts
+    if [ -f "/root/.bun/bin/bun" ]; then
+        sudo ln -sf /root/.bun/bin/bun /usr/local/bin/bun
+        echo -e "${GREEN}Bun installed and symlinked to /usr/local/bin/bun.${NC}"
+    else
+        echo -e "${RED}Bun installation did not produce /root/.bun/bin/bun. Please check the installer output.${NC}"
+    fi
+fi
 
 # --- Clone Liteshift Repository ---
 echo -e "\n${BLUE}Cloning Liteshift repository from GitHub...${NC}"
