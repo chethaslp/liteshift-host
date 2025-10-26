@@ -12,9 +12,22 @@ NC='\033[0m' # No Color
 
 # --- Ensure script is run as root ---
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Please run as root or with sudo.${NC}"
-  exit 1
+    echo -e "${RED}Please run as root or with sudo.${NC}"
+    exit 1
 fi
+
+# --- Large Banner ---
+echo -e "${BLUE}"
+cat <<'BANNER'
+        ██╗     ██╗████████╗███████╗███████╗██╗  ██╗██╗███████╗████████╗
+        ██║     ██║╚══██╔══╝██╔════╝██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
+        ██║     ██║   ██║   █████╗  ███████╗███████║██║█████╗     ██║   
+        ██║     ██║   ██║   ██╔══╝  ╚════██║██╔══██║██║██╔══╝     ██║   
+        ███████╗██║   ██║   ███████╗███████║██║  ██║██║██║        ██║   
+        ╚══════╝╚═╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   
+                          github.com/chethaslp                                    
+BANNER
+echo -e "${NC}"
 
 echo -e "${BLUE}Liteshift Installation Script${NC}"
 
