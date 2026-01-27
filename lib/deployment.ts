@@ -274,28 +274,71 @@ class DeploymentManager {
     //     deploymentLog += `No existing process to stop\n`;
     //   }
 
-      // Clean up existing directory if it exists
+      // Check if repository already exists
+      let appGit = simpleGit(appPath);
+      let repoExists = false;
+      
       try {
-        await fs.rm(appPath, { recursive: true, force: true });
-        const cleanupMessage = `Cleaned up existing directory\n`;
-        deploymentLog += cleanupMessage;
-        await this.logToQueue(queueId, cleanupMessage);
+        await fs.access(path.join(appPath, '.git'));
+        repoExists = true;
       } catch (error) {
-        // Directory might not exist
+        // Repository doesn't exist
       }
 
-      // Clone repository
-      const cloneMessage = `Cloning repository...\n`;
-      deploymentLog += cloneMessage;
-      await this.logToQueue(queueId, cloneMessage);
-      const git = simpleGit();
-      await git.clone(repository, appPath, ['--branch', branch, '--single-branch']);
-      const clonedMessage = `Repository cloned successfully\n`;
-      deploymentLog += clonedMessage;
-      await this.logToQueue(queueId, clonedMessage);
+      if (repoExists) {
+        // Repository exists, pull latest changes
+        const pullMessage = `Repository exists, pulling latest changes from ${branch}...\n`;
+        deploymentLog += pullMessage;
+        await this.logToQueue(queueId, pullMessage);
+        
+        try {
+          // Fetch all branches
+          await appGit.fetch(['origin']);
+          
+          // Checkout the target branch
+          await appGit.checkout(branch);
+          
+          // Pull latest changes
+          await appGit.pull('origin', branch);
+          
+          const pulledMessage = `Successfully pulled latest changes\n`;
+          deploymentLog += pulledMessage;
+          await this.logToQueue(queueId, pulledMessage);
+        } catch (error) {
+          const pullErrorMessage = `Failed to pull changes: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
+          deploymentLog += pullErrorMessage;
+          await this.logToQueue(queueId, pullErrorMessage);
+          
+          // If pull fails, clean up and clone fresh
+          const cleanupMessage = `Cleaning up and cloning fresh repository...\n`;
+          deploymentLog += cleanupMessage;
+          await this.logToQueue(queueId, cleanupMessage);
+          
+          await fs.rm(appPath, { recursive: true, force: true });
+          const git = simpleGit();
+          await git.clone(repository, appPath, ['--branch', branch, '--single-branch']);
+          appGit = simpleGit(appPath);
+          
+          const clonedMessage = `Repository cloned successfully\n`;
+          deploymentLog += clonedMessage;
+          await this.logToQueue(queueId, clonedMessage);
+        }
+      } else {
+        // Repository doesn't exist, clone it
+        const cloneMessage = `Cloning repository...\n`;
+        deploymentLog += cloneMessage;
+        await this.logToQueue(queueId, cloneMessage);
+        
+        const git = simpleGit();
+        await git.clone(repository, appPath, ['--branch', branch, '--single-branch']);
+        appGit = simpleGit(appPath);
+        
+        const clonedMessage = `Repository cloned successfully\n`;
+        deploymentLog += clonedMessage;
+        await this.logToQueue(queueId, clonedMessage);
+      }
 
       // Change to app directory for subsequent commands
-      const appGit = simpleGit(appPath);
       const gitInfo = await appGit.log(['-1']);
       const commitMessage = `Latest commit: ${gitInfo.latest?.hash} - ${gitInfo.latest?.message}\n`;
       deploymentLog += commitMessage;
