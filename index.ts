@@ -48,8 +48,6 @@ io.use((socket, next) => {
   const username = socket.handshake.auth.username;
   const password = socket.handshake.auth.password;
 
-    return next();
-
   if (!username || !password) {
     const err = new Error("401");
     // @ts-ignore

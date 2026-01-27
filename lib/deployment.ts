@@ -301,17 +301,41 @@ class DeploymentManager {
       deploymentLog += commitMessage;
       await this.logToQueue(queueId, commitMessage);
 
+      // Set environment variables in database before build
+      const app = dbHelpers.getAppByName(appName) as any;
+      for (const [key, value] of Object.entries(envVars)) {
+        dbHelpers.setAppEnvVar(app.id, key, value);
+      }
+
+      // Update environment file BEFORE install and build commands
+      try {
+        await envManager.updateEnvFile(appName);
+        const envFileMessage = `Environment file updated\n`;
+        deploymentLog += envFileMessage;
+        await this.logToQueue(queueId, envFileMessage);
+      } catch (error) {
+        const envErrorMessage = `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
+        deploymentLog += envErrorMessage;
+        await this.logToQueue(queueId, envErrorMessage);
+      }
+
+      // Get the env file path for sourcing
+      const envFilePath = envManager.getAppEnvFilePath(appName);
+
       // Install dependencies
       if (installCommand) {
         const installStartMessage = `Running install command: ${installCommand}\n`;
         deploymentLog += installStartMessage;
         await this.logToQueue(queueId, installStartMessage);
         
+        // Prepend command with sourcing the env file
+        const installCommandWithEnv = `set -a && [ -f "${envFilePath}" ] && . "${envFilePath}" && set +a && ${installCommand}`;
+        
         try {
           // Use streaming execution if we have streaming active, otherwise fallback to regular exec
           if (queueId && this.isStreamingActive(queueId)) {
             const { stdout: installOutput, stderr: installError } = await this.executeCommandWithStreaming(
-              installCommand,
+              installCommandWithEnv,
               { cwd: appPath },
               queueId,
               'install command'
@@ -319,7 +343,7 @@ class DeploymentManager {
             deploymentLog += installOutput;
             if (installError) deploymentLog += installError;
           } else {
-            const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
+            const { stdout: installOutput, stderr: installError } = await execAsync(installCommandWithEnv, { cwd: appPath });
             deploymentLog += installOutput;
             await this.logToQueue(queueId, installOutput);
             if (installError) {
@@ -345,11 +369,14 @@ class DeploymentManager {
         deploymentLog += buildStartMessage;
         await this.logToQueue(queueId, buildStartMessage);
         
+        // Prepend command with sourcing the env file
+        const buildCommandWithEnv = `set -a && [ -f "${envFilePath}" ] && . "${envFilePath}" && set +a && ${buildCommand}`;
+        
         try {
           // Use streaming execution if we have streaming active, otherwise fallback to regular exec
           if (queueId && this.isStreamingActive(queueId)) {
             const { stdout: buildOutput, stderr: buildError } = await this.executeCommandWithStreaming(
-              buildCommand,
+              buildCommandWithEnv,
               { cwd: appPath },
               queueId,
               'build command'
@@ -357,7 +384,7 @@ class DeploymentManager {
             deploymentLog += buildOutput;
             if (buildError) deploymentLog += buildError;
           } else {
-            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
+            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommandWithEnv, { cwd: appPath });
             deploymentLog += buildOutput;
             await this.logToQueue(queueId, buildOutput);
             if (buildError) {
@@ -375,24 +402,6 @@ class DeploymentManager {
         const buildCompleteMessage = `Build command completed\n`;
         deploymentLog += buildCompleteMessage;
         await this.logToQueue(queueId, buildCompleteMessage);
-      }
-
-      // Set environment variables in database
-      const app = dbHelpers.getAppByName(appName) as any;
-      for (const [key, value] of Object.entries(envVars)) {
-        dbHelpers.setAppEnvVar(app.id, key, value);
-      }
-
-      // Update environment file
-      try {
-        await envManager.updateEnvFile(appName);
-        const envFileMessage = `Environment file updated\n`;
-        deploymentLog += envFileMessage;
-        await this.logToQueue(queueId, envFileMessage);
-      } catch (error) {
-        const envErrorMessage = `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
-        deploymentLog += envErrorMessage;
-        await this.logToQueue(queueId, envErrorMessage);
       }
 
       // Get all env vars for this app
@@ -560,14 +569,35 @@ class DeploymentManager {
         }
       }
 
+      // Set environment variables in database before build
+      const appRecord = dbHelpers.getAppByName(appName) as any;
+      for (const [key, value] of Object.entries(envVars)) {
+        dbHelpers.setAppEnvVar(appRecord.id, key, value);
+      }
+
+      // Update environment file BEFORE install and build commands
+      try {
+        await envManager.updateEnvFile(appName);
+        deploymentLog += `Environment file updated\n`;
+      } catch (error) {
+        deploymentLog += `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
+      }
+
+      // Get the env file path for sourcing
+      const envFilePath = envManager.getAppEnvFilePath(appName);
+
       // Install dependencies
       if (installCommand) {
         deploymentLog += `Running install command: ${installCommand}\n`;
+        
+        // Prepend command with sourcing the env file
+        const installCommandWithEnv = `set -a && [ -f "${envFilePath}" ] && . "${envFilePath}" && set +a && ${installCommand}`;
+        
         try {
           // Use streaming execution if we have streaming active, otherwise fallback to regular exec
           if (queueId && this.isStreamingActive(queueId)) {
             const { stdout: installOutput, stderr: installError } = await this.executeCommandWithStreaming(
-              installCommand,
+              installCommandWithEnv,
               { cwd: appPath },
               queueId,
               'install command'
@@ -575,7 +605,7 @@ class DeploymentManager {
             deploymentLog += installOutput;
             if (installError) deploymentLog += installError;
           } else {
-            const { stdout: installOutput, stderr: installError } = await execAsync(installCommand, { cwd: appPath });
+            const { stdout: installOutput, stderr: installError } = await execAsync(installCommandWithEnv, { cwd: appPath });
             deploymentLog += installOutput;
             if (installError) deploymentLog += installError;
           }
@@ -589,11 +619,15 @@ class DeploymentManager {
       // Build application
       if (buildCommand) {
         deploymentLog += `Running build command: ${buildCommand}\n`;
+        
+        // Prepend command with sourcing the env file
+        const buildCommandWithEnv = `set -a && [ -f "${envFilePath}" ] && . "${envFilePath}" && set +a && ${buildCommand}`;
+        
         try {
           // Use streaming execution if we have streaming active, otherwise fallback to regular exec
           if (queueId && this.isStreamingActive(queueId)) {
             const { stdout: buildOutput, stderr: buildError } = await this.executeCommandWithStreaming(
-              buildCommand,
+              buildCommandWithEnv,
               { cwd: appPath },
               queueId,
               'build command'
@@ -601,7 +635,7 @@ class DeploymentManager {
             deploymentLog += buildOutput;
             if (buildError) deploymentLog += buildError;
           } else {
-            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommand, { cwd: appPath });
+            const { stdout: buildOutput, stderr: buildError } = await execAsync(buildCommandWithEnv, { cwd: appPath });
             deploymentLog += buildOutput;
             if (buildError) deploymentLog += buildError;
           }
@@ -610,20 +644,6 @@ class DeploymentManager {
           deploymentLog += errorMessage;
           throw error;
         }
-      }
-
-      // Set environment variables
-      const appRecord = dbHelpers.getAppByName(appName) as any;
-      for (const [key, value] of Object.entries(envVars)) {
-        dbHelpers.setAppEnvVar(appRecord.id, key, value);
-      }
-
-      // Update environment file
-      try {
-        await envManager.updateEnvFile(appName);
-        deploymentLog += `Environment file updated\n`;
-      } catch (error) {
-        deploymentLog += `Warning: Failed to update environment file: ${error instanceof Error ? error.message : 'Unknown error'}\n`;
       }
 
       // Get all env vars for this app
