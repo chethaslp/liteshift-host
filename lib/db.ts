@@ -37,6 +37,9 @@ db.exec(`
     runtime TEXT DEFAULT 'node',
     status TEXT DEFAULT 'stopped',
     port INTEGER,
+    webhook_token TEXT,
+    latest_commit_hash TEXT,
+    latest_commit_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -91,6 +94,11 @@ db.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Migrate existing tables
+try { db.exec('ALTER TABLE apps ADD COLUMN webhook_token TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE apps ADD COLUMN latest_commit_hash TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE apps ADD COLUMN latest_commit_message TEXT'); } catch (e) {}
 
 // Insert default settings if they don't exist
 const insertDefaultSetting = db.prepare(`
@@ -244,6 +252,14 @@ export const dbHelpers = {
   
   getAppDeployments: (appId: number, limit: number = 10) =>
     db.prepare('SELECT * FROM deployments WHERE app_id = ? ORDER BY deployed_at DESC LIMIT ?').all(appId, limit),
+
+  clearAppHistory: (appName: string) => {
+    const app = dbHelpers.getAppByName(appName) as any;
+    if (app) {
+      db.prepare('DELETE FROM deployments WHERE app_id = ?').run(app.id);
+    }
+    db.prepare('DELETE FROM deployment_queue WHERE app_name = ?').run(appName);
+  },
 
   // Deployment Queue
   createQueueItem: (appName: string, type: string, options: string) =>

@@ -1,5 +1,6 @@
 import type { Server, Socket } from "socket.io";
 import DeploymentManager from "../lib/deployment";
+import { dbHelpers } from "../lib/db";
 
 // Deploy from Git repository
 const deployFromGit = async (data: {
@@ -298,6 +299,33 @@ const stopStreamDeploymentLogs = (socket: Socket) => (data: { queueId: number },
   }
 };
 
+// Clear deployment history for an app
+const clearDeployHistory = async (data: { appName: string }, callback: (response: any) => void) => {
+  try {
+    const { appName } = data;
+    
+    if (!appName) {
+      callback({
+        success: false,
+        error: 'appName is required'
+      });
+      return;
+    }
+
+    dbHelpers.clearAppHistory(appName);
+    callback({
+      success: true,
+      message: `Deployment history cleared for ${appName}`
+    });
+  } catch (error) {
+    console.error('Clear deployment history error:', error);
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+};
+
 export default (server: Server, socket: Socket) => {
   socket.on("deploy:from-git", deployFromGit);
   socket.on("deploy:from-file", deployFromFile);
@@ -308,4 +336,5 @@ export default (server: Server, socket: Socket) => {
   socket.on("deploy:delete", deleteApp);
   socket.on("deploy:stream-logs", streamDeploymentLogs(socket));
   socket.on("deploy:stop-stream", stopStreamDeploymentLogs(socket));
+  socket.on("deploy:clear-history", clearDeployHistory);
 }

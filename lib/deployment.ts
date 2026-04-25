@@ -44,6 +44,7 @@ class DeploymentManager {
   private isProcessing: boolean = false;
   private io: Server | null = null;
   private activeStreams: Map<number, boolean> = new Map();
+  private activeProcesses: Map<number, any> = new Map();
 
   constructor() {
     this.appsDirectory = dbHelpers.getSetting('apps_directory') || '/var/www/apps';
@@ -79,8 +80,13 @@ class DeploymentManager {
 
       const child = spawn('sh', ['-c', command], {
         cwd: options.cwd,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true
       });
+
+      if (queueId) {
+        this.activeProcesses.set(queueId, child);
+      }
 
       // Stream stdout
       child.stdout.on('data', async (data) => {
@@ -101,17 +107,51 @@ class DeploymentManager {
       });
 
       child.on('close', (code) => {
+        if (queueId) {
+          this.activeProcesses.delete(queueId);
+        }
         if (code === 0) {
           resolve({ stdout, stderr });
         } else {
-          reject(new Error(`${commandName} failed with exit code ${code}\n${stderr}`));
+          // Check if killed manually
+          if (code === null) {
+            reject(new Error(`${commandName} was cancelled.`));
+          } else {
+            reject(new Error(`${commandName} failed with exit code ${code}\n${stderr}`));
+          }
         }
       });
 
       child.on('error', (error) => {
+        if (queueId) {
+          this.activeProcesses.delete(queueId);
+        }
         reject(new Error(`Failed to execute ${commandName}: ${error.message}`));
       });
     });
+  }
+
+  // Cancel any existing queued or building deployments for an app
+  cancelExistingDeployments(appName: string) {
+    const queuedItems = dbHelpers.getAllQueueItems() as any[];
+    for (const item of queuedItems) {
+      if (item.app_name === appName) {
+        if (item.status === 'queued') {
+          dbHelpers.updateQueueStatus(item.id, 'failed', 'Cancelled by newer deployment');
+        } else if (item.status === 'building') {
+          dbHelpers.updateQueueStatus(item.id, 'failed', 'Cancelled by newer deployment');
+          if (this.activeProcesses.has(item.id)) {
+            const child = this.activeProcesses.get(item.id);
+            try {
+              process.kill(-child.pid, 'SIGKILL'); // kill process group
+            } catch (e) {
+              try { child.kill('SIGKILL'); } catch (err) {}
+            }
+            this.activeProcesses.delete(item.id);
+          }
+        }
+      }
+    }
   }
 
   // Stop streaming for a deployment
@@ -144,6 +184,9 @@ class DeploymentManager {
 
   // Queue management methods
   addToQueue(type: 'git' | 'file', options: DeploymentOptions, fileBuffer?: Buffer): { queueId: number; message: string } {
+    // Cancel existing deployments for this app
+    this.cancelExistingDeployments(options.appName);
+
     // Store options as JSON string
     const optionsJson = JSON.stringify(options);
     
@@ -480,7 +523,9 @@ class DeploymentManager {
       // Update app status in database
       dbHelpers.updateApp(app.id, { 
         status: 'running',
-        deploy_path: appPath
+        deploy_path: appPath,
+        latest_commit_hash: gitInfo.latest?.hash,
+        latest_commit_message: gitInfo.latest?.message
       });
 
       const serviceCreatedMessage = `Systemctl service created and enabled\n`;

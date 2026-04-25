@@ -2,6 +2,7 @@ import type { Server, Socket } from "socket.io";
 import { dbHelpers } from "../lib/db";
 import DeploymentManager from "../lib/deployment";
 import envManager from "../lib/env";
+import crypto from "crypto";
 
 // Create a new app
 const createApp = async (data: {
@@ -193,6 +194,9 @@ const getAppByName = async (data: { appName: string }, callback: (response: any)
           start_command: app.start_command,
           runtime: app.runtime,
           port: app.port,
+          webhook_token: app.webhook_token,
+          latest_commit_hash: app.latest_commit_hash,
+          latest_commit_message: app.latest_commit_message,
           created_at: app.created_at,
           updated_at: app.updated_at
         }
@@ -742,6 +746,62 @@ const deleteAppEnvVars = async (data: {
   }
 };
 
+// Generate Webhook Token
+const generateWebhookToken = async (data: { appName: string }, callback: (response: any) => void) => {
+  try {
+    const { appName } = data;
+    if (!appName) {
+      return callback({ success: false, error: 'appName parameter is required' });
+    }
+
+    const app = dbHelpers.getAppByName(appName) as any;
+    if (!app) {
+      return callback({ success: false, error: `App '${appName}' not found` });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    dbHelpers.updateApp(app.id, { webhook_token: token });
+
+    callback({
+      success: true,
+      data: { webhook_token: token },
+      message: `Webhook token generated successfully for ${appName}`
+    });
+  } catch (error) {
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+};
+
+// Remove Webhook Token
+const removeWebhookToken = async (data: { appName: string }, callback: (response: any) => void) => {
+  try {
+    const { appName } = data;
+    if (!appName) {
+      return callback({ success: false, error: 'appName parameter is required' });
+    }
+
+    const app = dbHelpers.getAppByName(appName) as any;
+    if (!app) {
+      return callback({ success: false, error: `App '${appName}' not found` });
+    }
+
+    dbHelpers.updateApp(app.id, { webhook_token: null });
+
+    callback({
+      success: true,
+      message: `Webhook token removed successfully for ${appName}`
+    });
+  } catch (error) {
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+};
+
 export default (server: Server, socket: Socket) => {
   // App management
   socket.on("app:create", createApp);
@@ -763,4 +823,8 @@ export default (server: Server, socket: Socket) => {
   // Environment variable management - batch operations
   socket.on("app:env:set-multiple", setAppEnvVars);
   socket.on("app:env:delete-multiple", deleteAppEnvVars);
+
+  // Webhooks
+  socket.on("app:webhook:generate", generateWebhookToken);
+  socket.on("app:webhook:remove", removeWebhookToken);
 };
