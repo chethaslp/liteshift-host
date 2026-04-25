@@ -318,12 +318,13 @@ class DeploymentManager {
     //   }
 
       // Check if repository already exists
-      let appGit = simpleGit(appPath);
+      let appGit;
       let repoExists = false;
       
       try {
         await fs.access(path.join(appPath, '.git'));
         repoExists = true;
+        appGit = simpleGit(appPath);
       } catch (error) {
         // Repository doesn't exist
       }
