@@ -318,7 +318,7 @@ class DeploymentManager {
     //   }
 
       // Check if repository already exists
-      let appGit;
+      let appGit: any;
       let repoExists = false;
       
       try {
