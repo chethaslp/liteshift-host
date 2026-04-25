@@ -102,20 +102,10 @@ insertDefaultSetting.run('caddy_config_path', '/etc/caddy/Caddyfile');
 insertDefaultSetting.run('auto_ssl', 'true');
 insertDefaultSetting.run('systemctl_auto_startup', 'true');
 
-// Create default admin user if no users exist
+// Check if any admin user exists (created during installation via setup.ts)
 const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
 if (userCount.count === 0) {
-  const defaultPassword = bcrypt.hashSync('admin123', 10);
-  
-  // Use INSERT OR IGNORE to prevent constraint errors during build
-  const result = db.prepare(`
-    INSERT OR IGNORE INTO users (username, password_hash, email, role) 
-    VALUES (?, ?, ?, ?)
-  `).run('admin', defaultPassword, 'admin@localhost', 'admin');
-  
-  if (result.changes > 0) {
-    console.log('Default admin user created: admin/admin123');
-  }
+  console.warn('⚠ No users found in database. Run the setup script or re-run install.sh to create an admin user.');
 }
 
 export default db;

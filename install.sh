@@ -93,6 +93,62 @@ echo -e "\n${BLUE}Building the project...${NC}"
 npm run build
 echo -e "${GREEN}Build complete.${NC}"
 
+# --- Create Admin User ---
+echo -e "\n${BLUE}Setting up admin credentials...${NC}"
+
+# Check if an admin user already exists by running a quick check
+EXISTING_USER=$(node -e "
+  const Database = require('better-sqlite3');
+  const path = require('path');
+  const db = new Database(path.join(process.cwd(), 'data', 'data.db'));
+  const row = db.prepare('SELECT COUNT(*) as count FROM users').get();
+  console.log(row.count);
+  db.close();
+" 2>/dev/null || echo "0")
+
+if [ "$EXISTING_USER" -gt 0 ] 2>/dev/null; then
+    echo -e "${YELLOW}An admin user already exists. Skipping credential setup.${NC}"
+else
+    # Prompt for username
+    while true; do
+        read -p "$(echo -e "${GREEN}Enter admin username (min 3 characters): ${NC}")" ADMIN_USERNAME
+        if [ ${#ADMIN_USERNAME} -ge 3 ]; then
+            break
+        fi
+        echo -e "${RED}Username must be at least 3 characters long. Try again.${NC}"
+    done
+
+    # Prompt for password (hidden input)
+    while true; do
+        read -s -p "$(echo -e "${GREEN}Enter admin password (min 6 characters): ${NC}")" ADMIN_PASSWORD
+        echo ""
+        if [ ${#ADMIN_PASSWORD} -ge 6 ]; then
+            read -s -p "$(echo -e "${GREEN}Confirm admin password: ${NC}")" ADMIN_PASSWORD_CONFIRM
+            echo ""
+            if [ "$ADMIN_PASSWORD" = "$ADMIN_PASSWORD_CONFIRM" ]; then
+                break
+            fi
+            echo -e "${RED}Passwords do not match. Try again.${NC}"
+        else
+            echo -e "${RED}Password must be at least 6 characters long. Try again.${NC}"
+        fi
+    done
+
+    # Run the setup script to create the admin user
+    echo -e "${BLUE}Creating admin user...${NC}"
+    node ./build/setup.js "$ADMIN_USERNAME" "$ADMIN_PASSWORD"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Admin user created successfully.${NC}"
+    else
+        echo -e "${RED}Failed to create admin user. You can re-run: node ./build/setup.js <username> <password>${NC}"
+    fi
+
+    # Clear password variables from memory
+    unset ADMIN_PASSWORD
+    unset ADMIN_PASSWORD_CONFIRM
+fi
+
 # --- Install Caddy ---
 echo -e "\n${BLUE}Installing Caddy...${NC}"
 if command -v caddy &> /dev/null
