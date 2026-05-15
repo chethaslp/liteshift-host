@@ -109,6 +109,7 @@ insertDefaultSetting.run('apps_directory', '/var/www/apps');
 insertDefaultSetting.run('caddy_config_path', '/etc/caddy/Caddyfile');
 insertDefaultSetting.run('auto_ssl', 'true');
 insertDefaultSetting.run('process_manager', 'pm2'); // 'pm2' or 'systemctl'
+insertDefaultSetting.run('reverse_proxy', 'caddy'); // 'caddy' or 'cloudflare'
 
 // Check if any admin user exists (created during installation via setup.ts)
 const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };

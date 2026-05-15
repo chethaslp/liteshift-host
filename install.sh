@@ -97,14 +97,7 @@ echo -e "${GREEN}Build complete.${NC}"
 echo -e "\n${BLUE}Setting up admin credentials...${NC}"
 
 # Check if an admin user already exists by running a quick check
-EXISTING_USER=$(node -e "
-  const Database = require('better-sqlite3');
-  const path = require('path');
-  const db = new Database(path.join(process.cwd(), 'data', 'data.db'));
-  const row = db.prepare('SELECT COUNT(*) as count FROM users').get();
-  console.log(row.count);
-  db.close();
-" 2>/dev/null || echo "0")
+EXISTING_USER=$(node ./build/setup.js --check-user 2>/dev/null || echo "0")
 
 if [ "$EXISTING_USER" -gt 0 ] 2>/dev/null; then
     echo -e "${YELLOW}An admin user already exists. Skipping credential setup.${NC}"
@@ -136,12 +129,12 @@ else
 
     # Run the setup script to create the admin user
     echo -e "${BLUE}Creating admin user...${NC}"
-    node ./build/setup.js "$ADMIN_USERNAME" "$ADMIN_PASSWORD"
+    node ./build/setup.js --create-admin "$ADMIN_USERNAME" "$ADMIN_PASSWORD"
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Admin user created successfully.${NC}"
     else
-        echo -e "${RED}Failed to create admin user. You can re-run: node ./build/setup.js <username> <password>${NC}"
+        echo -e "${RED}Failed to create admin user. You can re-run: node ./build/setup.js --create-admin <username> <password>${NC}"
     fi
 
     # Clear password variables from memory
@@ -182,14 +175,7 @@ while true; do
 done
 
 # --- Save the process manager choice to the database ---
-node -e "
-  const Database = require('better-sqlite3');
-  const path = require('path');
-  const db = new Database(path.join(process.cwd(), 'data', 'data.db'));
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('process_manager', '$PROCESS_MANAGER');
-  db.close();
-  console.log('Process manager set to: $PROCESS_MANAGER');
-" 2>/dev/null || echo -e "${YELLOW}Warning: Could not persist process manager choice to DB. Default (pm2) will be used.${NC}"
+node ./build/setup.js --set-setting "process_manager" "$PROCESS_MANAGER" || echo -e "${YELLOW}Warning: Could not persist process manager choice to DB. Default (pm2) will be used.${NC}"
 
 # ============================================================
 # --- Setup PM2 (if chosen) ---
@@ -263,7 +249,46 @@ EOF
     echo -e "Use ${YELLOW}sudo systemctl status ${SERVICE_NAME}${NC} to check the service status."
 fi
 
-# --- Install Caddy ---
+# ============================================================
+# --- Choose Reverse Proxy ---
+# ============================================================
+echo -e "\n${BLUE}Reverse Proxy Selection${NC}"
+echo -e "Liteshift needs a way to route traffic to your apps and handle SSL."
+echo -e ""
+echo -e "  ${GREEN}[1] Caddy${NC}              - Automatic SSL, local proxy, fast & easy."
+echo -e "  ${YELLOW}[2] Cloudflare Tunnel${NC}  - Secure exposure without opening ports (cloudflared)."
+echo -e ""
+
+REVERSE_PROXY="caddy"  # default
+
+while true; do
+    read -p "$(echo -e "${GREEN}Choose reverse proxy [1/2] (default: 1 - Caddy): ${NC}")" RP_CHOICE
+    RP_CHOICE="${RP_CHOICE:-1}"
+    case "$RP_CHOICE" in
+        1)
+            REVERSE_PROXY="caddy"
+            echo -e "${GREEN}Selected: Caddy${NC}"
+            break
+            ;;
+        2)
+            REVERSE_PROXY="cloudflare"
+            echo -e "${YELLOW}Selected: Cloudflare Tunnel${NC}"
+            break
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+            ;;
+    esac
+done
+
+# --- Save the reverse proxy choice to the database ---
+node ./build/setup.js --set-setting "reverse_proxy" "$REVERSE_PROXY" || echo -e "${YELLOW}Warning: Could not persist reverse proxy choice to DB. Default (caddy) will be used.${NC}"
+
+# ============================================================
+# --- Setup Reverse Proxy ---
+# ============================================================
+if [ "$REVERSE_PROXY" = "caddy" ]; then
+    # --- Install Caddy ---
 echo -e "\n${BLUE}Installing Caddy...${NC}"
 if command -v caddy &> /dev/null
 then
@@ -293,6 +318,21 @@ if ! grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE" 2>/dev/null; the
     echo -e "${GREEN}Caddy configuration updated and reloaded.${NC}"
 else
     echo -e "${YELLOW}Caddy reverse proxy configuration already exists. Skipping.${NC}"
+fi
+
+elif [ "$REVERSE_PROXY" = "cloudflare" ]; then
+    # --- Install Cloudflare Tunnel (cloudflared) ---
+    echo -e "\n${BLUE}Installing Cloudflare Tunnel (cloudflared)...${NC}"
+    if command -v cloudflared &> /dev/null
+    then
+        echo -e "${YELLOW}Cloudflared is already installed. Skipping installation.${NC}"
+    else
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        rm cloudflared.deb
+        echo -e "${GREEN}Cloudflared installation complete.${NC}"
+    fi
+    echo -e "${YELLOW}Note: You will need to configure your Cloudflare Tunnel manually in the dashboard or via CLI.${NC}"
 fi
 
 # --- Final message ---

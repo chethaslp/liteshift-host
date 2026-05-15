@@ -33,20 +33,17 @@ PROCESS_MANAGER="pm2"  # default assumption
 
 # Try to read from DB
 if [ -d "$LITESHIFT_DIR" ]; then
-    PM_FROM_DB=$(node -e "
-      try {
-        const Database = require('better-sqlite3');
-        const path = require('path');
-        const db = new Database(path.join('$LITESHIFT_DIR', 'data', 'data.db'));
-        const row = db.prepare(\"SELECT value FROM settings WHERE key = 'process_manager'\").get();
-        db.close();
-        console.log(row ? row.value : 'pm2');
-      } catch(e) { console.log('pm2'); }
-    " 2>/dev/null || echo "pm2")
+    PM_FROM_DB=$(node "$LITESHIFT_DIR/build/setup.js" --get-setting "process_manager" 2>/dev/null)
+    if [ -z "$PM_FROM_DB" ]; then PM_FROM_DB="pm2"; fi
     PROCESS_MANAGER="$PM_FROM_DB"
+
+    RP_FROM_DB=$(node "$LITESHIFT_DIR/build/setup.js" --get-setting "reverse_proxy" 2>/dev/null)
+    if [ -z "$RP_FROM_DB" ]; then RP_FROM_DB="caddy"; fi
+    REVERSE_PROXY="$RP_FROM_DB"
 fi
 
 echo -e "\n${BLUE}Detected process manager: ${YELLOW}${PROCESS_MANAGER}${NC}"
+echo -e "${BLUE}Detected reverse proxy: ${YELLOW}${REVERSE_PROXY}${NC}"
 
 # --- Stop and remove the Liteshift service ---
 if [ "$PROCESS_MANAGER" = "pm2" ]; then
@@ -85,23 +82,27 @@ else
     fi
 fi
 
-# --- Remove from Caddy ---
-echo -e "\n${BLUE}Removing Caddy reverse proxy configuration...${NC}"
-CADDYFILE="/etc/caddy/Caddyfile"
-APP_PORT="8008"
+# --- Remove Reverse Proxy Config ---
+if [ "$REVERSE_PROXY" = "caddy" ]; then
+    echo -e "\n${BLUE}Removing Caddy reverse proxy configuration...${NC}"
+    CADDYFILE="/etc/caddy/Caddyfile"
+    APP_PORT="8008"
 
-if [ -f "$CADDYFILE" ]; then
-    if grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE"; then
-        # Use sed to delete the block for port 1000
-        sudo sed -i '/:1000 {/,/}/d' "$CADDYFILE"
-        # Reload Caddy using its own CLI (no systemctl needed)
-        caddy reload --config "$CADDYFILE" 2>/dev/null || sudo systemctl reload caddy 2>/dev/null || true
-        echo -e "${GREEN}Caddy configuration updated and reloaded.${NC}"
+    if [ -f "$CADDYFILE" ]; then
+        if grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE"; then
+            # Use sed to delete the block for port 1000
+            sudo sed -i '/:1000 {/,/}/d' "$CADDYFILE"
+            # Reload Caddy using its own CLI (no systemctl needed)
+            caddy reload --config "$CADDYFILE" 2>/dev/null || sudo systemctl reload caddy 2>/dev/null || true
+            echo -e "${GREEN}Caddy configuration updated and reloaded.${NC}"
+        else
+            echo -e "${YELLOW}Caddy reverse proxy configuration not found. Skipping.${NC}"
+        fi
     else
-        echo -e "${YELLOW}Caddy reverse proxy configuration not found. Skipping.${NC}"
+        echo -e "${YELLOW}Caddyfile not found. Skipping.${NC}"
     fi
-else
-    echo -e "${YELLOW}Caddyfile not found. Skipping.${NC}"
+elif [ "$REVERSE_PROXY" = "cloudflare" ]; then
+    echo -e "\n${BLUE}Cloudflare Tunnel was used. Please manually remove any tunnels in your Cloudflare Zero Trust dashboard if needed.${NC}"
 fi
 
 # --- Remove Liteshift Directory ---

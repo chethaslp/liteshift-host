@@ -118,6 +118,7 @@ www.${domain.domain} {
   }
 
   async writeCaddyfile(): Promise<void> {
+    if (dbHelpers.getSetting('reverse_proxy') === 'cloudflare') return;
     try {
       const config = await this.generateCaddyfile();
       
@@ -139,6 +140,7 @@ www.${domain.domain} {
   }
 
   async reloadCaddy(): Promise<void> {
+    if (dbHelpers.getSetting('reverse_proxy') === 'cloudflare') return;
     try {
       await execAsync('caddy reload --config ' + this.caddyConfigPath);
     } catch (error) {
@@ -212,6 +214,7 @@ www.${domain.domain} {
   }
 
   async startCaddy(): Promise<void> {
+    if (dbHelpers.getSetting('reverse_proxy') === 'cloudflare') return;
     try {
       await execAsync(`caddy start --config ${this.caddyConfigPath}`);
     } catch (error) {
@@ -221,6 +224,7 @@ www.${domain.domain} {
   }
 
   async stopCaddy(): Promise<void> {
+    if (dbHelpers.getSetting('reverse_proxy') === 'cloudflare') return;
     try {
       await execAsync('caddy stop');
     } catch (error) {

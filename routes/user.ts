@@ -263,6 +263,7 @@ const handshake = (socket: Socket) => async (data: any, callback: (response: any
         },
         version : process.env.version,
         host: out[4],
+        reverse_proxy: dbHelpers.getSetting('reverse_proxy') || 'caddy'
       }
     });
 }
