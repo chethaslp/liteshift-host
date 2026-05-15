@@ -149,29 +149,93 @@ else
     unset ADMIN_PASSWORD_CONFIRM
 fi
 
-# --- Install Caddy ---
-echo -e "\n${BLUE}Installing Caddy...${NC}"
-if command -v caddy &> /dev/null
-then
-    echo -e "${YELLOW}Caddy is already installed. Skipping installation.${NC}"
+# ============================================================
+# --- Choose Process Manager ---
+# ============================================================
+echo -e "\n${BLUE}Process Manager Selection${NC}"
+echo -e "Liteshift needs a process manager to keep your apps running and restart them on reboot."
+echo -e ""
+echo -e "  ${GREEN}[1] PM2${NC}         - Recommended. No root required for app restarts."
+echo -e "  ${YELLOW}[2] systemd${NC}     - Traditional Linux service manager (requires sudo)."
+echo -e ""
+
+PROCESS_MANAGER="pm2"  # default
+
+while true; do
+    read -p "$(echo -e "${GREEN}Choose process manager [1/2] (default: 1 - PM2): ${NC}")" PM_CHOICE
+    PM_CHOICE="${PM_CHOICE:-1}"
+    case "$PM_CHOICE" in
+        1)
+            PROCESS_MANAGER="pm2"
+            echo -e "${GREEN}Selected: PM2${NC}"
+            break
+            ;;
+        2)
+            PROCESS_MANAGER="systemctl"
+            echo -e "${YELLOW}Selected: systemd / systemctl${NC}"
+            break
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+            ;;
+    esac
+done
+
+# --- Save the process manager choice to the database ---
+node -e "
+  const Database = require('better-sqlite3');
+  const path = require('path');
+  const db = new Database(path.join(process.cwd(), 'data', 'data.db'));
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('process_manager', '$PROCESS_MANAGER');
+  db.close();
+  console.log('Process manager set to: $PROCESS_MANAGER');
+" 2>/dev/null || echo -e "${YELLOW}Warning: Could not persist process manager choice to DB. Default (pm2) will be used.${NC}"
+
+# ============================================================
+# --- Setup PM2 (if chosen) ---
+# ============================================================
+if [ "$PROCESS_MANAGER" = "pm2" ]; then
+    echo -e "\n${BLUE}Setting up PM2...${NC}"
+
+    if command -v pm2 &> /dev/null; then
+        echo -e "${YELLOW}PM2 is already installed. Skipping installation.${NC}"
+    else
+        echo -e "${BLUE}Installing PM2 globally...${NC}"
+        npm install -g pm2
+        echo -e "${GREEN}PM2 installed.${NC}"
+    fi
+
+    # Start Liteshift via PM2
+    echo -e "\n${BLUE}Starting Liteshift with PM2...${NC}"
+    NPM_PATH=$(which npm)
+
+    pm2 delete liteshift 2>/dev/null || true
+    pm2 start "$NPM_PATH" \
+        --name liteshift \
+        --cwd "$LITESHIFT_DIR" \
+        -- start
+
+    # Save pm2 list and set up startup hook
+    pm2 save
+    echo -e "${BLUE}Configuring PM2 to start on system boot...${NC}"
+    pm2 startup | tail -1 | bash || echo -e "${YELLOW}Could not auto-configure pm2 startup. Run 'pm2 startup' manually and follow the instructions.${NC}"
+
+    echo -e "${GREEN}Liteshift is running under PM2.${NC}"
+    echo -e "Use ${YELLOW}pm2 status liteshift${NC} to check the service status."
+    echo -e "Use ${YELLOW}pm2 logs liteshift${NC} to view logs."
+
+# ============================================================
+# --- Setup systemd (if chosen) ---
+# ============================================================
 else
-    sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-    sudo apt-get update
-    sudo apt-get install -y caddy
-    echo -e "${GREEN}Caddy installation complete.${NC}"
-fi
+    echo -e "\n${BLUE}Creating systemd service for Liteshift...${NC}"
 
-# --- Create and start Liteshift service ---
-echo -e "\n${BLUE}Creating systemd service for Liteshift...${NC}"
+    NPM_PATH=$(which npm)
+    SERVICE_NAME="liteshift"
+    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-NPM_PATH=$(which npm)
-SERVICE_NAME="liteshift"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-
-# Create the service file
-sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+    # Create the service file
+    sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 [Unit]
 Description=Liteshift Application
 After=network.target
@@ -187,7 +251,31 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOF
 
-echo -e "${GREEN}Service file created at ${SERVICE_FILE}${NC}"
+    echo -e "${GREEN}Service file created at ${SERVICE_FILE}${NC}"
+
+    # Reload systemd and start services
+    echo -e "\n${BLUE}Reloading systemd and starting the Liteshift service...${NC}"
+    sudo systemctl daemon-reload
+    sudo systemctl enable "${SERVICE_NAME}.service"
+    sudo systemctl restart "${SERVICE_NAME}.service"
+
+    echo -e "${GREEN}Liteshift service has been enabled and started.${NC}"
+    echo -e "Use ${YELLOW}sudo systemctl status ${SERVICE_NAME}${NC} to check the service status."
+fi
+
+# --- Install Caddy ---
+echo -e "\n${BLUE}Installing Caddy...${NC}"
+if command -v caddy &> /dev/null
+then
+    echo -e "${YELLOW}Caddy is already installed. Skipping installation.${NC}"
+else
+    sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt-get update
+    sudo apt-get install -y caddy
+    echo -e "${GREEN}Caddy installation complete.${NC}"
+fi
 
 # --- Setup Caddy Reverse Proxy ---
 echo -e "\n${BLUE}Setting up Caddy reverse proxy...${NC}"
@@ -197,25 +285,16 @@ PROXY_PORT="1000"
 PROXY_CONFIG=":${PROXY_PORT} {\n    reverse_proxy localhost:${APP_PORT}\n}"
 
 # Check if the config already exists to avoid duplicates
-if ! grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE"; then
+if ! grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE" 2>/dev/null; then
     echo -e "Adding reverse proxy config to Caddyfile: Port ${PROXY_PORT} -> ${APP_PORT}"
-    # Append the new configuration
     echo -e "\n${PROXY_CONFIG}" | sudo tee -a "$CADDYFILE" > /dev/null
-    sudo systemctl reload caddy
+    # Reload Caddy using its own CLI (no systemctl needed)
+    caddy reload --config "$CADDYFILE" 2>/dev/null || sudo systemctl reload caddy 2>/dev/null || true
     echo -e "${GREEN}Caddy configuration updated and reloaded.${NC}"
 else
     echo -e "${YELLOW}Caddy reverse proxy configuration already exists. Skipping.${NC}"
 fi
 
-# --- Reload systemd and start services ---
-echo -e "\n${BLUE}Reloading systemd and starting the Liteshift service...${NC}"
-sudo systemctl daemon-reload
-sudo systemctl enable "${SERVICE_NAME}.service"
-sudo systemctl restart "${SERVICE_NAME}.service"
-
-echo -e "${GREEN}Liteshift service has been enabled and started.${NC}"
-
 # --- Final message ---
-echo -e "\n${GREEN}Liteshift is installed and running as a service!${NC}"
-echo -e "Now running: ${YELLOW}sudo systemctl status ${SERVICE_NAME}${NC}"
-sudo systemctl status liteshift
+echo -e "\n${GREEN}✅ Liteshift is installed and running!${NC}"
+echo -e "Access the dashboard at: ${YELLOW}http://<your-server-ip>:1000${NC}"

@@ -10,7 +10,7 @@ import DeploymentManager from "./lib/deployment";
 import apps from "./routes/apps";
 import caddy from "./routes/caddy";
 import deploy from "./routes/deploy";
-import systemctl from "./routes/systemctl";
+import pm from "./routes/pm";
 import system from "./routes/system";
 import user from "./routes/user";
 
@@ -88,7 +88,7 @@ io.on("connection", (socket) => {
     apps(io, socket);
     caddy(io, socket);
     deploy(io, socket);
-    systemctl(io, socket);
+    pm(io, socket);
     system(io, socket);
     user(io, socket);
     

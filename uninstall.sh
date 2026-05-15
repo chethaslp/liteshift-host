@@ -26,30 +26,63 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# --- Stop and disable Liteshift service ---
-SERVICE_NAME="liteshift"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+LITESHIFT_DIR="/root/liteshift"
 
-echo -e "\n${BLUE}Stopping and disabling Liteshift service...${NC}"
-if systemctl is-active --quiet "${SERVICE_NAME}"; then
-    sudo systemctl stop "${SERVICE_NAME}"
-    echo -e "${GREEN}Service stopped.${NC}"
-else
-    echo -e "${YELLOW}Service is not running.${NC}"
+# --- Detect which process manager was used ---
+PROCESS_MANAGER="pm2"  # default assumption
+
+# Try to read from DB
+if [ -d "$LITESHIFT_DIR" ]; then
+    PM_FROM_DB=$(node -e "
+      try {
+        const Database = require('better-sqlite3');
+        const path = require('path');
+        const db = new Database(path.join('$LITESHIFT_DIR', 'data', 'data.db'));
+        const row = db.prepare(\"SELECT value FROM settings WHERE key = 'process_manager'\").get();
+        db.close();
+        console.log(row ? row.value : 'pm2');
+      } catch(e) { console.log('pm2'); }
+    " 2>/dev/null || echo "pm2")
+    PROCESS_MANAGER="$PM_FROM_DB"
 fi
 
-if systemctl is-enabled --quiet "${SERVICE_NAME}"; then
-    sudo systemctl disable "${SERVICE_NAME}"
-    echo -e "${GREEN}Service disabled.${NC}"
-else
-    echo -e "${YELLOW}Service is not enabled.${NC}"
-fi
+echo -e "\n${BLUE}Detected process manager: ${YELLOW}${PROCESS_MANAGER}${NC}"
 
-if [ -f "$SERVICE_FILE" ]; then
-    echo -e "${BLUE}Removing service file...${NC}"
-    sudo rm -f "$SERVICE_FILE"
-    sudo systemctl daemon-reload
-    echo -e "${GREEN}Service file removed.${NC}"
+# --- Stop and remove the Liteshift service ---
+if [ "$PROCESS_MANAGER" = "pm2" ]; then
+    echo -e "\n${BLUE}Stopping Liteshift PM2 process...${NC}"
+    if command -v pm2 &> /dev/null; then
+        pm2 stop liteshift 2>/dev/null && echo -e "${GREEN}PM2 process stopped.${NC}" || echo -e "${YELLOW}PM2 process was not running.${NC}"
+        pm2 delete liteshift 2>/dev/null && echo -e "${GREEN}PM2 process deleted.${NC}" || echo -e "${YELLOW}PM2 process not found.${NC}"
+        pm2 save 2>/dev/null || true
+    else
+        echo -e "${YELLOW}PM2 not found. Skipping PM2 cleanup.${NC}"
+    fi
+else
+    SERVICE_NAME="liteshift"
+    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+    echo -e "\n${BLUE}Stopping and disabling Liteshift systemd service...${NC}"
+    if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+        sudo systemctl stop "${SERVICE_NAME}"
+        echo -e "${GREEN}Service stopped.${NC}"
+    else
+        echo -e "${YELLOW}Service is not running.${NC}"
+    fi
+
+    if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+        sudo systemctl disable "${SERVICE_NAME}"
+        echo -e "${GREEN}Service disabled.${NC}"
+    else
+        echo -e "${YELLOW}Service is not enabled.${NC}"
+    fi
+
+    if [ -f "$SERVICE_FILE" ]; then
+        echo -e "${BLUE}Removing service file...${NC}"
+        sudo rm -f "$SERVICE_FILE"
+        sudo systemctl daemon-reload
+        echo -e "${GREEN}Service file removed.${NC}"
+    fi
 fi
 
 # --- Remove from Caddy ---
@@ -61,7 +94,8 @@ if [ -f "$CADDYFILE" ]; then
     if grep -q "reverse_proxy localhost:${APP_PORT}" "$CADDYFILE"; then
         # Use sed to delete the block for port 1000
         sudo sed -i '/:1000 {/,/}/d' "$CADDYFILE"
-        sudo systemctl reload caddy
+        # Reload Caddy using its own CLI (no systemctl needed)
+        caddy reload --config "$CADDYFILE" 2>/dev/null || sudo systemctl reload caddy 2>/dev/null || true
         echo -e "${GREEN}Caddy configuration updated and reloaded.${NC}"
     else
         echo -e "${YELLOW}Caddy reverse proxy configuration not found. Skipping.${NC}"
@@ -71,7 +105,6 @@ else
 fi
 
 # --- Remove Liteshift Directory ---
-LITESHIFT_DIR="/root/liteshift"
 echo -e "\n${BLUE}Liteshift application files are located at ${LITESHIFT_DIR}.${NC}"
 read -p "Do you want to completely delete the application directory and all its data (including the database)? (y/N) " -n 1 -r
 echo
@@ -86,4 +119,4 @@ else
     echo -e "${YELLOW}Directory ${LITESHIFT_DIR} preserved.${NC}"
 fi
 
-echo -e "\n${GREEN}Liteshift has been successfully uninstalled.${NC}"
+echo -e "\n${GREEN}✅ Liteshift has been successfully uninstalled.${NC}"

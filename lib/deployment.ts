@@ -4,7 +4,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import simpleGit from 'simple-git';
 import { dbHelpers } from './db';
-import systemctlManager from './systemctl';
+import processManager from './processManager';
 import caddyManager from './caddy';
 import envManager from './env';
 import type { Server } from 'socket.io';
@@ -311,7 +311,7 @@ class DeploymentManager {
       
       // Stop existing PM2 process if running
     //   try {
-    //     await pm2Manager.stop(appName);
+    //     await processManager.stop(appName);
     //     deploymentLog += `Stopped existing ${appName} process\n`;
     //   } catch (error) {
     //     deploymentLog += `No existing process to stop\n`;
@@ -498,13 +498,12 @@ class DeploymentManager {
         envObject[env.key] = env.value;
       });
 
-      // Start application with systemctl
-      const systemctlStartMessage = `Starting application with systemctl using ${runtime} runtime...\n`;
-      deploymentLog += systemctlStartMessage;
-      await this.logToQueue(queueId, systemctlStartMessage);
+      // Start application with pm2
+      const pm2StartMessage = `Starting application with process manager using ${runtime} runtime...\n`;
+      deploymentLog += pm2StartMessage;
+      await this.logToQueue(queueId, pm2StartMessage);
       
-      // Create systemd service
-      await systemctlManager.createService(appName, {
+      await processManager.createService(appName, {
         scriptPath: startCommand,
         cwd: appPath,
         env: envObject,
@@ -513,13 +512,12 @@ class DeploymentManager {
         user: 'root'
       });
       
-      // Start and enable the service
-      await systemctlManager.start(appName);
-      await systemctlManager.enable(appName);
+      // Save pm2 process list for auto-startup on reboot
+      await processManager.enable(appName);
 
-      const systemctlStartedMessage = `Application started successfully with systemctl\n`;
-      deploymentLog += systemctlStartedMessage;
-      await this.logToQueue(queueId, systemctlStartedMessage);
+      const pm2StartedMessage = `Application started successfully\n`;
+      deploymentLog += pm2StartedMessage;
+      await this.logToQueue(queueId, pm2StartedMessage);
 
       // Update app status in database
       dbHelpers.updateApp(app.id, { 
@@ -529,7 +527,7 @@ class DeploymentManager {
         latest_commit_message: gitInfo.latest?.message
       });
 
-      const serviceCreatedMessage = `Systemctl service created and enabled\n`;
+      const serviceCreatedMessage = `Process registered and enabled for auto-startup\n`;
       deploymentLog += serviceCreatedMessage;
       await this.logToQueue(queueId, serviceCreatedMessage);
 
@@ -606,12 +604,12 @@ class DeploymentManager {
       // Ensure apps directory exists
       await fs.mkdir(this.appsDirectory, { recursive: true });
       
-      // Stop existing systemctl service if running
+      // Stop existing pm2 process if running
       try {
-        await systemctlManager.stop(appName);
-        deploymentLog += `Stopped existing ${appName} service\n`;
+        await processManager.stop(appName);
+        deploymentLog += `Stopped existing ${appName} process\n`;
       } catch (error) {
-        deploymentLog += `No existing service to stop\n`;
+        deploymentLog += `No existing process to stop\n`;
       }
 
       // Clean up existing directory
@@ -742,11 +740,10 @@ class DeploymentManager {
         envObject[env.key] = env.value;
       });
 
-      // Start application with systemctl
-      deploymentLog += `Starting application with systemctl using ${runtime} runtime...\n`;
+      // Start application with pm2
+      deploymentLog += `Starting application with process manager using ${runtime} runtime...\n`;
       
-      // Create systemd service
-      await systemctlManager.createService(appName, {
+      await processManager.createService(appName, {
         scriptPath: startCommand,
         cwd: appPath,
         env: envObject,
@@ -755,9 +752,8 @@ class DeploymentManager {
         user: 'www-data'
       });
       
-      // Start and enable the service
-      await systemctlManager.start(appName);
-      await systemctlManager.enable(appName);
+      // Save pm2 process list for auto-startup on reboot
+      await processManager.enable(appName);
 
       // Update app status
       dbHelpers.updateApp(appRecord.id, { 
@@ -765,7 +761,7 @@ class DeploymentManager {
         deploy_path: appPath
       });
 
-      deploymentLog += `Systemctl service created and enabled\n`;
+      deploymentLog += `Process registered and enabled for auto-startup\n`;
 
       // Update Caddy if needed
       const domains = dbHelpers.getAppDomains(appRecord.id);
@@ -900,11 +896,11 @@ class DeploymentManager {
     }
 
     try {
-      // Stop and delete systemctl service
-      await systemctlManager.deleteService(appName);
+      // Stop and delete pm2 process
+      await processManager.deleteService(appName);
     } catch (error) {
-      // Service might not exist
-      console.log(`No systemctl service found for ${appName}`);
+      // Process might not exist
+      console.log(`No pm2 process found for ${appName}`);
     }
 
     // Remove app directory

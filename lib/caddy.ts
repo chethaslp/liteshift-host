@@ -140,7 +140,7 @@ www.${domain.domain} {
 
   async reloadCaddy(): Promise<void> {
     try {
-      await execAsync('sudo systemctl reload caddy');
+      await execAsync('caddy reload --config ' + this.caddyConfigPath);
     } catch (error) {
       console.error('Failed to reload Caddy:', error);
       throw error;
@@ -202,8 +202,10 @@ www.${domain.domain} {
 
   async isCaddyRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execAsync('systemctl is-active caddy');
-      return stdout.trim() === 'active';
+      const { stdout } = await execAsync('caddy version');
+      // If caddy binary exists, check if the API is reachable
+      const { stdout: apiOut } = await execAsync('curl -sf http://localhost:2019/config/ -o /dev/null && echo ok').catch(() => ({ stdout: '' }));
+      return apiOut.trim() === 'ok';
     } catch (error) {
       return false;
     }
@@ -211,7 +213,7 @@ www.${domain.domain} {
 
   async startCaddy(): Promise<void> {
     try {
-      await execAsync(`sudo systemctl start caddy`);
+      await execAsync(`caddy start --config ${this.caddyConfigPath}`);
     } catch (error) {
       console.error('Failed to start Caddy:', error);
       throw error;
@@ -220,7 +222,7 @@ www.${domain.domain} {
 
   async stopCaddy(): Promise<void> {
     try {
-      await execAsync('sudo systemctl stop caddy');
+      await execAsync('caddy stop');
     } catch (error) {
       console.error('Failed to stop Caddy:', error);
       throw error;
