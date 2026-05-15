@@ -327,7 +327,26 @@ elif [ "$REVERSE_PROXY" = "cloudflare" ]; then
     then
         echo -e "${YELLOW}Cloudflared is already installed. Skipping installation.${NC}"
     else
-        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+        case "$ARCH" in
+            amd64|x86_64)
+                CF_ARCH="amd64"
+                ;;
+            arm64|aarch64)
+                CF_ARCH="arm64"
+                ;;
+            armhf|armv7l|arm)
+                CF_ARCH="arm"
+                ;;
+            i386|i686)
+                CF_ARCH="386"
+                ;;
+            *)
+                echo -e "${RED}Unsupported architecture for cloudflared: $ARCH. Please install it manually.${NC}"
+                exit 1
+                ;;
+        esac
+        curl -L --output cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb"
         sudo dpkg -i cloudflared.deb
         rm cloudflared.deb
         echo -e "${GREEN}Cloudflared installation complete.${NC}"
