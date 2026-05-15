@@ -151,7 +151,7 @@ export const dbHelpers = {
     if (fields.length === 0) return null;
     
     values.push(id);
-    const query = `UPDATE users SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+    const query = `UPDATE users SET ${fields.join(', ')} WHERE id = ?`;
     return db.prepare(query).run(...values);
   },
 

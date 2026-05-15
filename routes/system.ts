@@ -441,6 +441,39 @@ const setSettings = async (data: { settings: Record<string, string> }, callback:
   }
 };
 
+// Update Liteshift
+const updateLiteshift = async (data: {}, callback: (response: any) => void) => {
+  try {
+    const processManager = dbHelpers.getSetting('process_manager') || 'pm2';
+    const restartCommand = processManager === 'pm2' 
+      ? 'pm2 restart liteshift' 
+      : 'sudo systemctl restart liteshift';
+
+    // We send success first because the restart will kill the connection
+    callback({
+      success: true,
+      message: 'Liteshift is updating and will restart shortly...'
+    });
+
+    // Run in background slightly delayed
+    setTimeout(() => {
+      exec(`git pull && npm install && npm run build && ${restartCommand}`, { cwd: process.cwd() }, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Update failed: ${error}`);
+        } else {
+          console.log(`Update successful: ${stdout}`);
+        }
+      });
+    }, 1000);
+  } catch (error) {
+    console.error('Update error:', error);
+    callback({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+};
+
 export default (server: Server, socket: Socket) => {
   socket.on("system:analytics", getSystemAnalytics);
   socket.on("system:cpu", getCPUInfo);
@@ -454,5 +487,6 @@ export default (server: Server, socket: Socket) => {
   // Configuration management routes
   socket.on("system:get-settings", getSettings);
   socket.on("system:set-settings", setSettings);
-
+  
+  socket.on("system:update", updateLiteshift);
 }
